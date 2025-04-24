@@ -1,6 +1,6 @@
 {
   "name": "yukufy",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "A Player Package built with Node.js, using Spotify and SoundCloud as search and streaming engines, easy and simple to use for your bot.",
   "main": "main.js",
   "scripts": {
@@ -18,21 +18,21 @@
     "player",
     "yukufy"
   ],
-  "author": "cronegamesplays",
+  "author": "shindozk",
   "license": "ISC",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cronegamesplays/yukufy.git"
+    "url": "https://github.com/shindozk/yukufy.git"
   },
   "bugs": {
-    "url": "https://github.com/cronegamesplays/yukufy/issues"
+    "url": "https://github.com/shindozk/yukufy/issues"
   },
-  "homepage": "https://github.com/cronegamesplays/yukufy#readme",
+  "homepage": "https://github.com/shindozk/yukufy#readme",
   "dependencies": {
     "@discordjs/voice": "^0.17.0",
     "@types/node": "^18.0.6",
     "axios": "^1.7.7",
-    "discord.js": "^14.15.3",
+    "discord.js": "^14.18.0",
     "events": "^3.3.0",
     "ffmpeg-static": "^5.2.0",
     "genius-lyrics": "^4.4.7",
@@ -43,6 +43,7 @@
     "soundcloud-downloader": "^1.0.0",
     "soundcloud-scraper": "^5.0.3",
     "spotify-web-api-node": "^5.0.2",
-    "yt-stream": "^1.7.4"
+    "yt-search": "^2.12.1",
+    "yukufy": "^1.6.0"
   }
 }

@@ -4,7 +4,7 @@ module.exports = {
     YukufyClient
 };
 
-require("./src/functions/Update");
-//require("./src/functions/Test");
+require("./src/scripts/Update");
+//require("./test");
 
-//© 2024 Yukufy Player Music - Kandaraku Studios | Owner - Developer: shindozk (CroneGamesPlays)
+//© 2025 Yukufy Player Music - Kandaraku Studios | Owner - Developer: shindozk

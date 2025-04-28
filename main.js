@@ -5,6 +5,6 @@ module.exports = {
 };
 
 require("./src/scripts/Update");
-require("./test2");
+//require("./test2");
 
 //© 2025 Yukufy Player Music - Kandaraku Studios | Owner - Developer: shindozk

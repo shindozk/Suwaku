@@ -11,486 +11,941 @@ const SpotifyWebApi = require('spotify-web-api-node');
 const SoundCloud = require('soundcloud-scraper');
 const scdl = require('soundcloud-downloader').default;
 const ytSearch = require('yt-search');
-const axios = require('axios');
 const sodium = require('libsodium-wrappers');
 const { EventEmitter } = require('events');
 const Genius = require('genius-lyrics');
+const { v4: uuidv4 } = require('uuid');
 
-// Initialize sodium for optimized voice processing\;
+const { getAudioStream } = require('./Stream');
 
 (async () => { await sodium.ready; })();
 
 /**
  * @typedef {Object} TrackInfo
+ * @property {string} id
  * @property {string} url
  * @property {string} title
  * @property {string} artist
- * @property {string} duration    // MM:SS format
- * @property {string} source      // 'spotify' | 'soundcloud'
+ * @property {string} duration     // MM:SS
+ * @property {string} source       // 'spotify'|'soundcloud'
  * @property {number} likes
  * @property {string} thumbnail
- * @property {Object} member      // Discord member who requested
- * @property {Object} textChannel // Channel where request was made
+ * @property {Object} member
+ * @property {Object} textChannel
  * @property {string} guildId
+ * @property {number} addedAt      // timestamp ms
  */
 
-/**
- * Convert milliseconds to MM:SS
- */
-function convertMsToMinutesSeconds(ms) {
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000)
-    .toString()
-    .padStart(2, '0');
-  return `${minutes}:${seconds}`;
-}
+const convertMsToMinutesSeconds = ms => {
+  if (isNaN(ms) || ms < 0) return '0:00';
+  const m = Math.floor(ms / 60000);
+  const s = Math.floor((ms % 60000) / 1000).toString().padStart(2, '0');
+  return `${m}:${s}`;
+};
 
 class YukufyClient extends EventEmitter {
-  /**
-   * @param {Client} client  // Discord.js client
-   * @param {Object} options
-   * @param {Object} options.api
-   * @param {string} options.api.clientId
-   * @param {string} options.api.clientSecret
-   * @param {string} [options.api.youtubeApiKey]
-   * @param {Object} options.player
-   * @param {number} [options.player.defaultVolume]
-   * @param {boolean} [options.player.leaveOnEmptyQueue]
-   * @param {number} [options.player.leaveOnEmptyQueueCooldown]
-   * @param {boolean} [options.player.autoPlayRelated]
-   */
-  constructor(client, { api, player }) {
+  constructor(client, { api, player = {} }) {
     super();
     if (!client) throw new Error('Discord.js client is required');
     if (!api?.clientId || !api?.clientSecret) throw new Error('Spotify credentials are required');
 
     this.client = client;
-    this.apiConfig = {
-      clientId: api.clientId,
-      clientSecret: api.clientSecret,
-      youtubeApiKey: api.youtubeApiKey || null
-    };
-
-    this.playerConfig = {
-      defaultVolume: player?.defaultVolume ?? 50,
-      leaveOnEmptyQueue: player?.leaveOnEmptyQueue ?? true,
-      leaveOnEmptyQueueCooldown: player?.leaveOnEmptyQueueCooldown ?? 30000,
-      autoPlayRelated: player?.autoPlayRelated ?? false
-    };
-
-    this.volume = this.playerConfig.defaultVolume;
-    this.queue = new Map();
-    this.currentTracks = new Map();
-    this.isPlaying = new Map();
-    this.loopMode = new Map();
-
-    // API clients
-    this.spotifyApi = new SpotifyWebApi({
-      clientId: this.apiConfig.clientId,
-      clientSecret: this.apiConfig.clientSecret
-    });
+    this.spotifyApi = new SpotifyWebApi({ clientId: api.clientId, clientSecret: api.clientSecret });
     this.soundcloudClient = new SoundCloud.Client();
     this.soundcloudClientId = null;
     this.lyricsClient = new Genius.Client();
-
     this.tokenExpirationTime = 0;
-    this.authenticationPromise = this._authenticateSpotify();
+    this._authenticateSpotify();
+
+    this.queues = {};    // guildId: TrackInfo[]
+    this.current = {};   // guildId: TrackInfo | null
+    this.isPlaying = {}; // guildId: boolean
+    this.loopMode = {};  // guildId: 0=off, 1=track, 2=queue
+    this.filters = {};   // guildId: string[]
+    this.volume = player.defaultVolume ?? 75;
+
+    this.leaveOnEmptyQueue = player.leaveOnEmptyQueue ?? false;
+    this.leaveOnEmptyQueueCooldown = player.leaveOnEmptyQueueCooldown ?? 30000;
+    this._leaveTimeouts = new Map();
+
+    this.player = null;
 
     this._setupTokenRefresh();
-    this._emitVersion();
-  }
-
-  /**
-   * Initialize SoundCloud and Spotify tokens
-   */
-  async initialize() {
-    try {
-      this.soundcloudClientId = await SoundCloud.keygen();
-      await this.authenticationPromise;
-      this.emit('ready', { client: this });
-      return this;
-    } catch (error) {
-      console.error('[Yukufy] Initialization error:', error);
-      throw new Error(`Initialization failed: ${error.message}`);
-    }
+    this.emit('info', { name: 'Yukufy', version: '1.7.0' });
   }
 
   async _authenticateSpotify() {
     try {
-      const data = await this.spotifyApi.clientCredentialsGrant();
-      this.spotifyApi.setAccessToken(data.body.access_token);
-      this.tokenExpirationTime = Date.now() + data.body.expires_in * 1000 - 60000;
-      return true;
+        const data = await this.spotifyApi.clientCredentialsGrant();
+        this.spotifyApi.setAccessToken(data.body.access_token);
+        this.tokenExpirationTime = Date.now() + data.body.expires_in * 1000 - 60000;
+        this.emit('debug', 'Spotify token refreshed.');
     } catch (error) {
-      console.error('[Yukufy] Spotify auth error:', error);
-      throw new Error(`Spotify authentication failed: ${error.message}`);
+        this.emit('error', { error: `Spotify authentication failed: ${error.message}` });
     }
   }
 
   _setupTokenRefresh() {
     setInterval(async () => {
       if (Date.now() >= this.tokenExpirationTime) {
-        try {
           await this._authenticateSpotify();
-        } catch (error) {
-          console.error('[Yukufy] Spotify token refresh error:', error);
-        }
       }
     }, 15 * 60 * 1000);
   }
 
-  _emitVersion() {
-    this.emit('info', {
-      name: 'Yukufy',
-      version: '1.6.0',
-      description: 'Advanced music client for Discord.js'
-    });
-  }
-
-  _getQueueData(guildId, create = false) {
-    if (!this.queue.has(guildId) && create) {
-      this.queue.set(guildId, []);
-      this.currentTracks.set(guildId, null);
-      this.isPlaying.set(guildId, false);
-      this.loopMode.set(guildId, 0);
+  _initGuild(guildId) {
+    if (!this.queues[guildId]) {
+      this.queues[guildId] = [];
+      this.loopMode[guildId] = 0;
+      this.isPlaying[guildId] = false;
+      this.current[guildId] = null;
+      this.filters[guildId] = [];
+      this.emit('debug', `Initialized state for guild ${guildId}`);
     }
-    return {
-      queue: this.queue.get(guildId) || [],
-      currentTrack: this.currentTracks.get(guildId),
-      isPlaying: this.isPlaying.get(guildId) || false,
-      loopMode: this.loopMode.get(guildId) || 0
-    };
   }
 
   async search(query, source = 'spotify') {
+    await this._authenticateSpotify();
+    if (!query) throw new Error('Search query required');
+    query = query.trim();
+    this.emit('debug', `Searching for "${query}" on ${source}`);
+
     try {
-      await this.authenticationPromise;
-      if (!query) throw new Error('Search query is required');
-      const isUrl = /^(https?:\/\/)?(www\.)?(spotify\.com|soundcloud\.com)/.test(query);
-      if (isUrl) {
-        if (query.includes('spotify.com')) source = 'spotify';
-        else if (query.includes('soundcloud.com')) source = 'soundcloud';
-      }
-      switch (source.toLowerCase()) {
-        case 'spotify': {
-          const data = await this.spotifyApi.searchTracks(query, { limit: 20 });
-          if (!data.body.tracks.items.length) throw new Error('No results on Spotify');
-          return data.body.tracks.items.map(t => ({
-            title: t.name,
-            artist: t.artists[0].name,
-            url: t.external_urls.spotify,
-            duration: convertMsToMinutesSeconds(t.duration_ms),
-            id: t.id,
-            int_id: ``, // id aleatorio
-            source: 'spotify',
-            likes: t.popularity,
-            thumbnail: t.album.images[0]?.url || null
-          }));
+        switch (source) {
+          case 'spotify': {
+            const res = await this.spotifyApi.searchTracks(query, { limit: 7 });
+            const t = res.body.tracks?.items?.[0];
+            return t ? [{
+              url: t.external_urls.spotify,
+              title: t.name,
+              artist: t.artists[0]?.name || 'Unknown Artist',
+              duration: convertMsToMinutesSeconds(t.duration_ms),
+              source: 'spotify',
+              likes: t.popularity,
+              thumbnail: t.album?.images?.[0]?.url,
+              artistId: t.artists[0]?.id
+            }] : [];
+          }
+          case 'soundcloud': {
+            if (!this.soundcloudClientId) {
+                 try {
+                     this.soundcloudClientId = await SoundCloud.keygen();
+                     this.emit('debug', 'SoundCloud client ID obtained.');
+                 } catch (scError) {
+                     this.emit('error', { error: `Failed to get SoundCloud client ID: ${scError.message}`});
+                     throw new Error('Could not initialize SoundCloud search.');
+                 }
+            }
+            const sc = await scdl.search({ query, limit: 7, resourceType: 'tracks', client_id: this.soundcloudClientId });
+            const t = sc?.collection?.[0];
+            return t ? [{
+              url: t.permalink_url,
+              title: t.title,
+              artist: t.user?.username || 'Unknown Artist',
+              duration: convertMsToMinutesSeconds(t.duration),
+              source: 'soundcloud',
+              likes: t.likes_count,
+              thumbnail: t.artwork_url || t.user?.avatar_url
+            }] : [];
+          }
+          default:
+            throw new Error('Source not supported');
         }
-        case 'soundcloud': {
-          if (!this.soundcloudClientId) this.soundcloudClientId = await SoundCloud.keygen();
-          const scInfo = await scdl.search({
-            query, limit: 20, resourceType: 'tracks', client_id: this.soundcloudClientId
-          });
-          if (!scInfo.collection.length) throw new Error('No results on SoundCloud');
-          return scInfo.collection.map(t => ({
-            title: t.title,
-            artist: t.user.username,
-            url: t.permalink_url,
-            duration: convertMsToMinutesSeconds(t.duration),
-            id: t.id.toString(),
-            int_id: ``, // id aleatorio
-            source: 'soundcloud',
-            likes: t.likes_count,
-            thumbnail: t.artwork_url || null
-          }));
-        }
-        default:
-          throw new Error(`Platform "${source}" not supported`);
-      }
     } catch (error) {
-      console.error('[Yukufy] Search error:', error);
-      throw error;
+         this.emit('error', { error: `Search failed for "${query}" on ${source}: ${error.message}`});
+         return [];
     }
   }
 
-  async play({ query, voiceChannel, textChannel, member, source = 'spotify' }) {
-    if (!query || !voiceChannel || !textChannel || !member) {
-      throw new Error('Missing parameters for play');
+  async play({ query, voiceChannel, textChannel, member, source }) {
+    if (!voiceChannel || !textChannel || !member) {
+        throw new Error('Missing required parameters: voiceChannel, textChannel, or member.');
     }
     const guildId = voiceChannel.guild.id;
+    this._initGuild(guildId);
+
     try {
-      this._getQueueData(guildId, true);
-      await this._connect(voiceChannel);
-      const results = await this.search(query, source);
-      const track = results[0];
-      if (!track) throw new Error('No track found');
-      const trackInfo = { ...track, member, textChannel, guildId, addedAt: Date.now() };
-      this.queue.get(guildId).push(trackInfo);
-      this.emit('trackAdd', { track: trackInfo, queue: this.queue.get(guildId), guildId });
-      if (!this.isPlaying.get(guildId)) await this._processQueue(guildId);
-      return trackInfo;
-    } catch (error) {
-      console.error('[Yukufy] Play error:', error);
-      throw error;
+        await this._connect(voiceChannel);
+    } catch (connectionError) {
+        this.emit('error', { guildId, error: `Failed to connect for play command: ${connectionError.message}` });
+        throw connectionError;
     }
+
+    const results = await this.search(query, source);
+    if (!results || results.length === 0) {
+      this.emit('searchNoResult', { query, source, guildId, textChannelId: textChannel.id });
+      throw new Error(`No track found for query "${query}" from source "${source}".`);
+    }
+
+    const t = results[0];
+    const trackInfo = {
+      id: uuidv4(),
+      ...t,
+      guildId,
+      member: {
+        id: member.id,
+        username: member.user.username,
+        displayName: member.displayName
+      },
+      textChannel: {
+         id: textChannel.id,
+         name: textChannel.name
+      },
+      addedAt: Date.now()
+    };
+
+    const wasPlaying = this.isPlaying[guildId];
+    const queue = this.queues[guildId];
+    queue.push(trackInfo);
+    this.emit('trackAdd', { track: trackInfo, queue, guildId });
+
+    if (!wasPlaying && !this.current[guildId]) {
+      this.emit('debug', `Triggering _processQueue for ${guildId} after adding track to empty/idle queue.`);
+      this._processQueue(guildId).catch(err => {
+          this.emit('error', {guildId, error: `Error starting queue processing: ${err.message}`});
+      });
+    } else {
+        this.emit('debug', `Track added to queue for ${guildId}. Player state: isPlaying=${this.isPlaying[guildId]}, current=${this.current[guildId]?.title || 'None'}`);
+    }
+
+    return trackInfo;
   }
 
   async _connect(voiceChannel) {
     const guildId = voiceChannel.guild.id;
     let connection = getVoiceConnection(guildId);
-    if (!connection || connection.joinConfig.channelId !== voiceChannel.id) {
-      if (connection) connection.destroy();
-      connection = joinVoiceChannel({
-        channelId: voiceChannel.id,
-        guildId,
-        adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-        selfDeaf: true
-      });
-      connection.on(VoiceConnectionStatus.Disconnected, async () => {
+
+    if (!connection || [VoiceConnectionStatus.Destroyed, VoiceConnectionStatus.Disconnected].includes(connection.state.status)) {
+        this.emit('debug', `Creating/Recreating voice connection for ${guildId}`);
+        connection = joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: guildId,
+            adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+            selfDeaf: true
+        });
+
+        connection.on(VoiceConnectionStatus.Disconnected, async (oldState, newState) => {
+            this.emit('warn', `Voice connection disconnected for ${guildId}. State: ${newState.status}. Trying to recover...`);
+            try {
+                await Promise.race([
+                    entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+                    entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+                ]);
+                 this.emit('info', `Voice connection recovering for ${guildId}.`);
+            } catch (error) {
+                 this.emit('error', {guildId, error:`Voice connection lost permanently for ${guildId}. Destroying.`});
+                if(connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
+                this._cleanupResources(guildId);
+            }
+        });
+
+         connection.on(VoiceConnectionStatus.Destroyed, () => {
+             this.emit('info', `Voice connection successfully destroyed for ${guildId}.`);
+              this._cleanupResources(guildId);
+         });
+
         try {
-          await Promise.race([
-            entersState(connection, VoiceConnectionStatus.Signalling, 5000),
-            entersState(connection, VoiceConnectionStatus.Connecting, 5000)
-          ]);
-        } catch (err) {
-          connection.destroy();
-          this._cleanupResources(guildId);
-          this.emit('disconnect', { guildId, error: err });
+            await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+            this.emit('connect', guildId);
+        } catch (error) {
+            this.emit('error', {guildId, error:`Failed to establish voice connection for ${guildId}: ${error.message}`});
+            if(connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
+            throw new Error(`Failed to connect to voice channel: ${error.message || error}`);
         }
-      });
-      connection.on(VoiceConnectionStatus.Ready, () => {
-        this.emit('connect', { guildId, channelId: voiceChannel.id });
-      });
-      if (!this._players) this._players = new Map();
-      if (!this._players.has(guildId)) {
-        const player = createAudioPlayer();
-        player.on(AudioPlayerStatus.Idle, () => this._handleTrackEnd(guildId));
-        player.on('error', err => this._handlePlayerError(guildId, err));
-        this._players.set(guildId, player);
-      }
-      connection.subscribe(this._players.get(guildId));
+    } else if (connection.state.status === VoiceConnectionStatus.Ready) {
+         this.emit('debug', `Voice connection for ${guildId} already exists and is Ready.`);
+    } else {
+         this.emit('debug', `Voice connection for ${guildId} exists but is in state: ${connection.state.status}. Waiting for Ready...`);
+          try {
+            await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+            this.emit('debug', `Voice connection for ${guildId} reached Ready state.`);
+          } catch (error) {
+             this.emit('error', {guildId, error:`Existing connection for ${guildId} failed to become Ready: ${error.message}`});
+             if(connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
+             throw new Error(`Existing connection failed to become Ready: ${error.message || error}`);
+          }
     }
+
+    if (!this.player) {
+        this.emit('debug', `Creating global AudioPlayer instance.`);
+        this.player = createAudioPlayer();
+        this._setupPlayerListeners();
+    }
+
+    if (connection.state.status === VoiceConnectionStatus.Ready && connection.state.subscription?.player !== this.player) {
+        this.emit('debug', `Subscribing connection for ${guildId} to the player.`);
+        connection.subscribe(this.player);
+    }
+
     return connection;
   }
 
-  async _processQueue(guildId) {
-    const data = this._getQueueData(guildId);
-    if (!data.queue.length) {
-      this.isPlaying.set(guildId, false);
-      if (this.playerConfig.leaveOnEmptyQueue) {
-        setTimeout(() => {
-          const current = this._getQueueData(guildId);
-          if (!current.queue.length) this.leave(guildId);
-        }, this.playerConfig.leaveOnEmptyQueueCooldown);
-      }
-      return false;
-    }
-    let nextTrack;
-    const loop = this.loopMode.get(guildId);
-    if (loop === 1 && data.currentTrack) nextTrack = data.currentTrack;
-    else { nextTrack = data.queue.shift(); if (loop === 2) data.queue.push(nextTrack); }
-    try {
-      this.currentTracks.set(guildId, nextTrack);
-      this.isPlaying.set(guildId, true);
-      const player = this._players.get(guildId);
-      if (!player) throw new Error('Audio player not found');
-      const stream = await this._getAudioStream(nextTrack);
-      const resource = createAudioResource(stream, { inlineVolume: true, metadata: nextTrack });
-      resource.volume.setVolume(this.volume / 100);
-      player.play(resource);
-      this.emit('trackStart', { track: nextTrack, guildId });
-      return true;
-    } catch (error) {
-      console.error('[Yukufy] Queue processing error:', error);
-      this.emit('trackError', { track: nextTrack, guildId, error });
-      return this._processQueue(guildId);
-    }
+  _setupPlayerListeners() {
+       this.player.on(AudioPlayerStatus.Idle, (oldState) => {
+            const guildId = oldState.resource?.metadata?.guildId;
+            if (guildId) {
+                 this.emit('debug', `Player Idle event detected for guild ${guildId}. Previous state: ${oldState.status}`);
+                 if (oldState.status === AudioPlayerStatus.Playing && this.current[guildId]?.id === oldState.resource.metadata?.id) {
+                      this._handleTrackEnd(guildId);
+                 } else if (oldState.status === AudioPlayerStatus.Buffering) {
+                      this.emit('warn', `Player went Idle directly from Buffering for ${guildId}. Possible stream issue.`);
+                      this._handleTrackEnd(guildId);
+                 } else {
+                      this.emit('debug', `Player Idle for ${guildId}, but previous state was ${oldState.status} or track mismatch. Ignoring Idle trigger for _handleTrackEnd.`);
+                 }
+            } else {
+                 this.emit('warn', 'Player Idle event received, but no guildId found in resource metadata.');
+            }
+        });
+
+        this.player.on(AudioPlayerStatus.Playing, (oldState) => {
+          const resource = this.player.state.resource;
+          const track = resource?.metadata;
+          const guildId = track?.guildId;
+
+           if (guildId && track) {
+             this.emit('debug', `Player status changed to Playing for guild ${guildId}. Track: ${track.title}`);
+             this.isPlaying[guildId] = true;
+             this.emit('trackStart', track);
+           } else {
+             this.emit('warn', `Player entered Playing state but could not retrieve guildId or track metadata.`);
+           }
+     });
+
+        this.player.on(AudioPlayerStatus.Paused, () => {
+             const guildId = this.player.state.resource?.metadata?.guildId;
+             if (guildId) {
+                 this.emit('debug', `Player status changed to Paused for guild ${guildId}.`);
+                 this.isPlaying[guildId] = false;
+             }
+        });
+
+         this.player.on('error', error => {
+             const resource = error.resource;
+             const guildId = resource?.metadata?.guildId;
+              if (guildId) {
+                this.emit('error', {guildId, track: resource?.metadata, error: `AudioPlayer Error for guild ${guildId}: ${error.message}. Track: ${resource?.metadata?.title || 'Unknown'}`});
+                 if (this.isPlaying[guildId]) {
+                     this.isPlaying[guildId] = false;
+                     this.current[guildId] = null;
+                     setTimeout(() => this._processQueue(guildId).catch(err => this.emit('error', {guildId, error: `Error processing queue after player error: ${err.message}`})), 500);
+                 }
+              } else {
+                 this.emit('error', {error: `Global AudioPlayer Error: ${error.message}. No guild context from resource.`});
+              }
+         });
   }
 
-  async _getAudioStream(track) {
-    try {
-      const query = `${track.artist} ${track.title}`.trim();
-      if (!query) throw new Error('Artist and title are required');
-      const ytResult = await ytSearch(query);
-      if (!ytResult.videos.length) throw new Error(`No YouTube video for "${query}"`);
-      const videoId = new URL(ytResult.videos[0].url).searchParams.get('v');
-      if (!videoId) throw new Error('Unable to extract video ID');
-      const rapidOptions = {
-        method: 'GET',
-        url: 'https://youtube-mp3-2025.p.rapidapi.com/v1/social/youtube/audio',
-        params: { id: videoId, quality: '320kbps' },
-        headers: {
-          'x-rapidapi-key': '195d9d56f0mshf2ef5b15de50facp11ef65jsn7dbd159005d4',
-          'x-rapidapi-host': 'youtube-mp3-2025.p.rapidapi.com'
+  async _processQueue(guildId, seekPosition = 0) {
+    this._initGuild(guildId);
+    const queue = this.queues[guildId];
+    let trackToPlay = null;
+
+    this.emit('debug', `_processQueue called for ${guildId}. Seek: ${seekPosition}s. Loop: ${this.loopMode[guildId]}. Queue size: ${queue.length}. Current: ${this.current[guildId]?.title || 'None'}`);
+
+    if (seekPosition > 0 && this.current[guildId]) {
+        this.emit('debug', `Seek request: Replaying ${this.current[guildId].title} from ${seekPosition}s.`);
+        trackToPlay = this.current[guildId];
+    } else {
+        const currentTrack = this.current[guildId];
+        const loopMode = this.loopMode[guildId];
+
+        if (loopMode === 1 && currentTrack) {
+            trackToPlay = currentTrack;
+            this.emit('debug', `Loop Mode 1: Replaying track ${trackToPlay.title}.`);
+        } else if (loopMode === 2) {
+            if (currentTrack) {
+                 if(!queue.some(t => t.id === currentTrack.id)) {
+                    queue.push(currentTrack);
+                    this.emit('debug', `Loop Mode 2: Added ${currentTrack.title} (ID: ${currentTrack.id}) to end of queue.`);
+                 } else {
+                     this.emit('debug', `Loop Mode 2: ${currentTrack.title} (ID: ${currentTrack.id}) already in queue.`);
+                 }
+            }
+            if (queue.length > 0) {
+                trackToPlay = queue.shift();
+                this.emit('debug', `Loop Mode 2: Playing next track ${trackToPlay.title} (ID: ${trackToPlay.id}) from queue.`);
+            } else if (currentTrack && queue.length === 0) {
+                 trackToPlay = currentTrack;
+                  this.emit('warn', `Loop Mode 2: Queue empty, replaying last track ${trackToPlay.title} (ID: ${trackToPlay.id}).`);
+            }
+        } else {
+            if (queue.length > 0) {
+                trackToPlay = queue.shift();
+                this.emit('debug', `No Loop: Playing next track ${trackToPlay.title} (ID: ${trackToPlay.id}) from queue.`);
+            } else {
+                 this.emit('debug', `No Loop: Queue is empty. No track to play.`);
+            }
         }
-      };
-      const rapidRes = await axios.request(rapidOptions);
-      if (rapidRes.data.error) throw new Error(rapidRes.data.error);
-      const downloadUrl = rapidRes.data.linkDownload;
-      if (!downloadUrl) throw new Error('No download link from API');
-      const response = await axios.get(downloadUrl, { responseType: 'stream', timeout: 30000 });
-      return response.data;
-    } catch (err) {
-      console.error('[Yukufy] Audio stream error:', err);
-      throw err;
+    }
+
+    if (trackToPlay) {
+        const prevTimeout = this._leaveTimeouts.get(guildId);
+        if (prevTimeout) {
+            clearTimeout(prevTimeout);
+            this._leaveTimeouts.delete(guildId);
+            this.emit('debug', `Cleared leave timeout for ${guildId} as a new track is starting.`);
+        }
+
+        this.current[guildId] = trackToPlay;
+
+        try {
+            const resource = await this._createAudioResource(trackToPlay, seekPosition);
+
+             if (!resource) {
+                 this.emit('error', {guildId, error: `Failed to create audio resource for ${trackToPlay.title}. Skipping.`});
+                 this.isPlaying[guildId] = false;
+                 this.current[guildId] = null;
+                 await this._processQueue(guildId);
+                 return;
+             }
+
+            this.player.play(resource);
+
+            if (seekPosition > 0) {
+                 this.emit('seek', { guildId, position: seekPosition, track: trackToPlay });
+            }
+
+        } catch (error) {
+            this.emit('error', { guildId, track: trackToPlay, error: `Error during playback setup for ${trackToPlay?.title}: ${error.message || error}` });
+            this.isPlaying[guildId] = false;
+            this.current[guildId] = null;
+             setTimeout(() => this._processQueue(guildId).catch(err => this.emit('error', {guildId, error:`Error processing queue after playback setup error: ${err.message}`})), 1500);
+        }
+    } else {
+        this.emit('debug', `No track determined to play for ${guildId}. Queue is empty or loop conditions not met.`);
+
+        this.isPlaying[guildId] = false;
+        this.current[guildId] = null;
+
+         if (this.player && this.player.state.status !== AudioPlayerStatus.Idle) {
+              this.emit('warn', `_processQueue reached empty state for ${guildId}, but player status is ${this.player.state.status}. Forcing stop.`);
+              this.player.stop(true);
+         }
+
+        this.emit('queueEnd', guildId);
+
+        if (this.leaveOnEmptyQueue) {
+            if (!this._leaveTimeouts.has(guildId)) {
+                this.emit('debug', `Queue ended for ${guildId}. Setting leave timeout (${this.leaveOnEmptyQueueCooldown}ms).`);
+                const timeout = setTimeout(() => {
+                    const conn = getVoiceConnection(guildId);
+                    if (conn && !this.isPlaying[guildId] && this.queues[guildId]?.length === 0) {
+                        this.emit('debug', `Leave timeout triggered for ${guildId}. Leaving channel.`);
+                        conn.destroy();
+                        this._leaveTimeouts.delete(guildId);
+                    } else {
+                        this.emit('debug', `Leave timeout triggered for ${guildId}, but state changed (playing: ${this.isPlaying[guildId]}, queue: ${this.queues[guildId]?.length}, conn: ${!!conn}). Aborting leave.`);
+                        this._leaveTimeouts.delete(guildId);
+                    }
+                }, this.leaveOnEmptyQueueCooldown);
+                this._leaveTimeouts.set(guildId, timeout);
+            } else {
+                 this.emit('debug', `Queue ended for ${guildId}, but leave timeout already scheduled.`);
+            }
+        } else {
+             this.emit('debug', `Queue ended for ${guildId}. Option leaveOnEmptyQueue is false.`);
+        }
     }
   }
 
   _handleTrackEnd(guildId) {
-    const track = this.currentTracks.get(guildId);
-    if (track) this.emit('trackEnd', { track, guildId });
-    this._processQueue(guildId);
+    if (!this.current[guildId]) {
+        this.emit('debug', `_handleTrackEnd called for ${guildId} but no current track. Ignoring.`);
+        return;
+    }
+
+    const finishedTrack = this.current[guildId];
+    const loopMode = this.loopMode[guildId];
+
+    this.emit('debug', `Track end detected for ${finishedTrack.title} (ID: ${finishedTrack.id}) in guild ${guildId}. Loop: ${loopMode}`);
+
+    this.emit('trackEnd', finishedTrack);
+
+    setImmediate(() => {
+       this._processQueue(guildId).catch(err => {
+            this.emit('error', {guildId, error: `Error processing queue after track end: ${err.message}`});
+       });
+    });
   }
 
-  _handlePlayerError(guildId, error) {
-    const track = this.currentTracks.get(guildId);
-    console.error('[Yukufy] Player error:', error);
-    this.emit('playerError', { track, guildId, error });
-    this._processQueue(guildId);
+  async _createAudioResource(track, seekSeconds = 0) {
+    const guildId = track.guildId;
+    try {
+        const query = `${track.artist} ${track.title}`.trim().replace(/[^\w\s]/gi, '');
+        this.emit('debug', `Searching YouTube for resource: "${query}"`);
+        const ytResult = await ytSearch(query);
+
+        if (!ytResult || !ytResult.videos || ytResult.videos.length === 0) {
+            this.emit('error', { guildId, track, error: `No YouTube video found for query "${query}"` });
+            return null;
+        }
+        const video = ytResult.videos[0];
+        const videoUrl = video.url;
+        this.emit('debug', `Found YouTube video: ${video.title} (${videoUrl})`);
+
+        const streamOptions = seekSeconds > 0 ? { seek: seekSeconds } : undefined;
+        const stream = await getAudioStream(videoUrl, streamOptions);
+        if (!stream) {
+             this.emit('error', { guildId, track, error: `Failed to get audio stream for ${videoUrl}` });
+             return null;
+        }
+
+        const resource = createAudioResource(stream, {
+            metadata: track,
+            inlineVolume: true
+        });
+
+        resource.volume?.setVolume(this.volume / 100);
+
+        return resource;
+
+    } catch (error) {
+        this.emit('error', { guildId, track, error: `Error creating audio resource for ${track.title}: ${error.message || error}` });
+        return null;
+    }
   }
 
-  _cleanupResources(guildId) {
-    this.queue.set(guildId, []);
-    this.currentTracks.set(guildId, null);
-    this.isPlaying.set(guildId, false);
-    this.emit('queueClear', { guildId });
-  }
-
-  async skip(guildId) {
-    const player = this._players.get(guildId);
-    if (!player) throw new Error('Audio player not found');
-    player.stop();
-    this.emit('trackSkip', { track: this.currentTracks.get(guildId), guildId });
-    return true;
-  }
-
-  async stop(guildId) {
-    const player = this._players.get(guildId);
-    if (!player) throw new Error('Audio player not found');
-    player.stop();
-    this._cleanupResources(guildId);
-    return true;
-  }
-
-  async pause(guildId) {
-    const player = this._players.get(guildId);
-    if (!player) throw new Error('Audio player not found');
-    if (player.state.status === AudioPlayerStatus.Paused) return { status: 'alreadyPaused' };
-    player.pause();
-    this.emit('trackPause', { track: this.currentTracks.get(guildId), guildId });
-    return { status: 'paused' };
-  }
-
-  async resume(guildId) {
-    const player = this._players.get(guildId);
-    if (!player) throw new Error('Audio player not found');
-    if (player.state.status === AudioPlayerStatus.Playing) return { status: 'alreadyPlaying' };
-    player.unpause();
-    this.emit('trackResume', { track: this.currentTracks.get(guildId), guildId });
-    return { status: 'resumed' };
-  }
-
-  async setVolume(guildId, volume) {
-    if (volume < 0 || volume > 100) throw new Error('Volume must be between 0-100');
-    this.volume = volume;
-    const player = this._players.get(guildId);
-    if (player?.state.resource) player.state.resource.volume.setVolume(volume / 100);
-    this.emit('volumeChange', { volume, guildId });
-    return volume;
-  }
-
-  async setLoopMode(guildId, mode) {
-    if (![0,1,2].includes(mode)) throw new Error('Invalid loop mode');
-    this.loopMode.set(guildId, mode);
-    this.emit('loopChange', { mode, guildId });
+  /** loop mode: 0=off, 1=track, 2=queue */
+  setLoopMode(guildId, mode = 0) {
+    if (![0, 1, 2].includes(mode)) throw new Error('Invalid loop mode. Use 0 (off), 1 (track), or 2 (queue).');
+    this._initGuild(guildId);
+    this.loopMode[guildId] = mode;
+    this.emit('loopModeChange', { guildId, mode });
     return mode;
   }
 
-  async getQueue(guildId) {
-    const data = this._getQueueData(guildId);
-    return { current: data.currentTrack, queue: data.queue, isPlaying: data.isPlaying, loopMode: data.loopMode };
-  }
+  removeFromQueue(guildId, identifier) {
+    this._initGuild(guildId);
+    const queue = this.queues[guildId];
+    let index = -1;
 
-  async getNowPlaying(guildId) {
-    const data = this._getQueueData(guildId);
-    if (!data.currentTrack || !data.isPlaying) return null;
-    const player = this._players.get(guildId);
-    if (!player?.state.resource) return data.currentTrack;
-    const elapsedMs = player.state.resource.playbackDuration;
-    const elapsed = convertMsToMinutesSeconds(elapsedMs);
-    const [min, sec] = data.currentTrack.duration.split(':').map(Number);
-    const totalMs = (min*60 + sec)*1000;
-    const progress = parseFloat(((elapsedMs/totalMs)*100).toFixed(2));
-    return { ...data.currentTrack, elapsedTime: `${elapsed}/${data.currentTrack.duration}`, progress, elapsedMs, totalMs };
-  }
-
-  async shuffle(guildId) {
-    const queue = this.queue.get(guildId) || [];
-    if (queue.length < 2) return queue;
-    for (let i=queue.length-1; i>0; i--) {
-      const j = Math.floor(Math.random()*(i+1));
-      [queue[i], queue[j]] = [queue[j], queue[i]];
+    if (typeof identifier === 'number') {
+      if (identifier >= 0 && identifier < queue.length) {
+        index = identifier;
+      }
+    } else if (typeof identifier === 'string') {
+      index = queue.findIndex(t => t.id === identifier);
     }
-    this.emit('queueShuffle', { queue, guildId });
+
+    if (index === -1) {
+        throw new Error(`Invalid identifier or track not found in queue: ${identifier}`);
+    }
+
+    const [removedTrack] = queue.splice(index, 1);
+    this.emit('trackRemove', { track: removedTrack, queue, guildId });
+    return removedTrack;
+  }
+
+  moveInQueue(guildId, fromIdentifier, toPosition) {
+    this._initGuild(guildId);
+    const queue = this.queues[guildId];
+
+    const resolveIndex = id => {
+        if (typeof id === 'number') return id;
+        if (typeof id === 'string') return queue.findIndex(t => t.id === id);
+        return -1;
+    };
+
+    const fromIndex = resolveIndex(fromIdentifier);
+
+    if (fromIndex < 0 || fromIndex >= queue.length) {
+      throw new Error(`Invalid 'from' identifier or track not found: ${fromIdentifier}`);
+    }
+    if (typeof toPosition !== 'number' || toPosition < 0 || toPosition >= queue.length) {
+       throw new Error(`Invalid 'to' position: ${toPosition}. Must be a valid index in the queue.`);
+    }
+    if (fromIndex === toPosition) return queue;
+
+    const [itemToMove] = queue.splice(fromIndex, 1);
+    queue.splice(toPosition, 0, itemToMove);
+
+    this.emit('queueReorder', { queue, guildId });
     return queue;
   }
 
-  async remove(guildId, index) {
-    const queue = this.queue.get(guildId) || [];
-    if (index<0||index>=queue.length) throw new Error('Invalid index');
-    const [track] = queue.splice(index,1);
-    this.emit('trackRemove',{ track, index, guildId });
-    return track;
+  getQueue(guildId) {
+    this._initGuild(guildId);
+    return [...this.queues[guildId]];
+    /* return this.queues[guildId].map((track, index) => ({
+      position: index,
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+      url: track.url,
+      duration: track.duration,
+      source: track.source,
+      thumbnail: track.thumbnail,
+      requestedBy: track.member,
+      addedAt: track.addedAt
+    })); */
   }
 
-  async leave(guildId) {
-    const connection = getVoiceConnection(guildId);
-    if (!connection) return false;
-    const player = this._players.get(guildId);
-    player?.stop();
-    connection.destroy();
-    this._cleanupResources(guildId);
-    this._players.delete(guildId);
-    this.emit('disconnect',{ guildId });
+  skip(guildId) {
+    this._initGuild(guildId);
+    const current = this.current[guildId];
+    if (!current || !this.player) {
+        this.emit('debug', `Skip called for ${guildId}, but nothing is playing.`);
+        return false;
+    }
+
+    this.emit('debug', `Skipping track ${current.title} in ${guildId}`);
+    this.player.stop(true);
     return true;
   }
 
-  async getRelatedTracks(guildId) {
-    const current = this.currentTracks.get(guildId);
-    if (!current) throw new Error('No track playing');
-    if (current.source==='spotify') {
-      const res = await this.spotifyApi.getArtistTopTracks(current.id,'BR');
-      return res.body.tracks.map(t=>({ title:t.name, artist:t.artists[0].name, url:t.external_urls.spotify, duration:convertMsToMinutesSeconds(t.duration_ms), id:t.id, source:'spotify', likes:t.popularity, thumbnail:t.album.images[0]?.url||null }));
-    } else {
-      const results = await ytSearch(`${current.artist} similar songs`);
-      return results.videos.map(v=>({ title:v.title, artist:v.channel.name, url:v.url, duration:v.duration.raw, id:v.id, source:'youtube', likes:null, thumbnail:v.thumbnails[0]?.url||null }));
+  shuffle(guildId) {
+    this._initGuild(guildId);
+    const queue = this.queues[guildId];
+    if (queue.length < 2) return queue;
+
+    for (let i = queue.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [queue[i], queue[j]] = [queue[j], queue[i]];
+    }
+
+    this.emit('queueShuffle', { guildId, queue });
+    return queue;
+  }
+
+  seek(guildId, positionInSeconds) {
+    this._initGuild(guildId);
+    const track = this.current[guildId];
+
+    if (!track || !this.isPlaying[guildId]) {
+        const errorMsg = 'Cannot seek: No track is currently playing.';
+        this.emit('error', { guildId, error: errorMsg });
+        throw new Error(errorMsg);
+    }
+    if (typeof positionInSeconds !== 'number' || positionInSeconds < 0) {
+        const errorMsg = `Cannot seek: Position must be a non-negative number (received ${positionInSeconds}).`;
+        this.emit('error', { guildId, error: errorMsg });
+        throw new Error(errorMsg);
+    }
+
+    const durationParts = track.duration.split(':').map(Number);
+    const totalDurationSeconds = (durationParts[0] * 60) + (durationParts[1] || 0);
+
+    if (positionInSeconds >= totalDurationSeconds) {
+        this.emit('debug', `Seek position (${positionInSeconds}s) is beyond track duration (${totalDurationSeconds}s). Skipping track.`);
+        this.skip(guildId);
+        return;
+    }
+
+    this.emit('debug', `Seeking to ${positionInSeconds}s for track ${track.title} in ${guildId}`);
+
+     if (this.player.state.status !== AudioPlayerStatus.Idle) {
+         // this.player.stop(true);
+     }
+
+    this._processQueue(guildId, positionInSeconds).catch(error => {
+        this.emit('error', {guildId, error: `Error during seek processing: ${error.message || error}`});
+    });
+  }
+
+  setFilter(guildId, filter) {
+    this._initGuild(guildId);
+    if (!this.filters[guildId].includes(filter)) {
+        this.filters[guildId].push(filter);
+        this.emit('filterAdd', { guildId, filter });
+        // Ex: this._processQueue(guildId, this.player?.state.resource?.playbackDuration / 1000);
+        this.emit('warn', `Filter functionality for '${filter}' not fully implemented. Filter added to list.`);
     }
   }
 
-  async addRelatedTracks(guildId,count=3) {
-    const related = await this.getRelatedTracks(guildId);
-    const tracks = related.slice(0,count).map(track=>({ ...track, member:this.currentTracks.get(guildId).member, textChannel:this.currentTracks.get(guildId).textChannel, guildId, addedAt:Date.now() }));
-    const queue = this.queue.get(guildId);
-    tracks.forEach(t=>queue.push(t));
-    tracks.forEach(t=>this.emit('trackAdd',{ track:t, queue, guildId, autoAdded:true }));
-    return tracks;
+  removeFilter(guildId, filter) {
+    this._initGuild(guildId);
+    const initialLength = this.filters[guildId].length;
+    this.filters[guildId] = this.filters[guildId].filter(f => f !== filter);
+    if (this.filters[guildId].length < initialLength) {
+        this.emit('filterRemove', { guildId, filter });
+         this.emit('warn', `Filter functionality for '${filter}' not fully implemented. Filter removed from list.`);
+    }
   }
 
-  async getPlaylistInfo(url) { throw new Error('Not implemented'); }
+  async createPlaylist(guildId, name) {
+    this._initGuild(guildId);
+    const queue = this.queues[guildId];
+    const current = this.current[guildId];
+    const tracksToSave = [];
+    if (current) tracksToSave.push(current);
+    tracksToSave.push(...queue);
 
-  async playPlaylist(opts) { throw new Error('Not implemented'); }
+    if (tracksToSave.length === 0) {
+        throw new Error("Cannot create an empty playlist.");
+    }
 
-  getPlayerStats(guildId) {
-    const data = this._getQueueData(guildId);
+    const playlist = {
+      name: name || `Playlist_${Date.now()}`,
+      tracks: tracksToSave.map(t => ({
+           title: t.title,
+           artist: t.artist,
+           url: t.url,
+           source: t.source,
+           duration: t.duration
+      })),
+      createdAt: Date.now(),
+      creatorId: current?.member?.id || queue[0]?.member?.id
+    };
+
+    this.emit('playlistCreate', { guildId, playlist });
+    this.emit('info', `Playlist '${playlist.name}' created structure (saving not implemented).`);
+    return playlist;
+  }
+
+  async getLyrics(guildId) {
+    this._initGuild(guildId);
+    const track = this.current[guildId];
+    if (!track) throw new Error('No track is currently playing.');
+
+    try {
+        const searchQuery = `${track.title} ${track.artist}`;
+        this.emit('debug', `Searching lyrics for: ${searchQuery}`);
+        const searchPromise = this.lyricsClient.songs.search(searchQuery);
+        const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Lyrics search timed out')), 15000));
+
+        const results = await Promise.race([searchPromise, timeoutPromise]);
+
+        if (!results || results.length === 0) {
+            this.emit('lyricsNotFound', { track, guildId });
+            throw new Error('No lyrics found for this track.');
+        }
+
+        const firstSong = results[0];
+        this.emit('debug', `Found lyrics candidate: ${firstSong.title} by ${firstSong.artist?.name}`);
+
+        const lyricsPromise = firstSong.lyrics();
+        const lyricsTimeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Fetching lyrics timed out')), 15000));
+
+        const lyrics = await Promise.race([lyricsPromise, lyricsTimeoutPromise]);
+
+        if (!lyrics) {
+             this.emit('lyricsNotFound', { track, guildId });
+             throw new Error('Could not fetch lyrics content.');
+        }
+
+        return {
+          title: track.title,
+          artist: track.artist,
+          lyrics: lyrics.trim(),
+          sourceURL: firstSong.url
+        };
+    } catch (error) {
+         this.emit('error', { guildId, track, error: `Failed to get lyrics: ${error.message}` });
+         throw error;
+    }
+  }
+
+  async getRelatedTracks(guildId) {
+    this._initGuild(guildId);
+    const track = this.current[guildId];
+    if (!track) throw new Error('No track playing to find related tracks.');
+
+    this.emit('debug', `Finding related tracks for ${track.title}`);
+    try {
+        if (track.source === 'spotify' && track.artistId) {
+           await this._authenticateSpotify();
+           const recommendations = await this.spotifyApi.getRecommendations({
+               seed_tracks: [track.url.split('/').pop()],
+               limit: 5
+           });
+           return recommendations.body.tracks.map(this._formatSpotifyTrack);
+        } else {
+          const query = `${track.artist} ${track.title} mix`;
+          const results = await ytSearch({query, pages: 1});
+           return results.videos
+               .filter(v => v.title.toLowerCase().includes(track.title.toLowerCase()) === false)
+               .slice(0, 5)
+               .map(v => ({
+                   title: v.title,
+                   artist: v.author?.name || 'Unknown Artist',
+                   duration: v.duration?.timestamp || '0:00',
+                   url: v.url,
+                   thumbnail: v.thumbnail,
+                   source: 'youtube'
+               }));
+        }
+    } catch (error) {
+        this.emit('error', {guildId, track, error: `Failed to get related tracks: ${error.message}`});
+        return [];
+    }
+  }
+
+  getStatus(guildId) {
+    this._initGuild(guildId);
     const connection = getVoiceConnection(guildId);
-    return { isConnected:!!connection, isPlaying:data.isPlaying, queueSize:data.queue.length, loopMode:data.loopMode, volume:this.volume, currentTrack:data.currentTrack, ping:connection?.ping||null };
+    const playerState = this.player?.state;
+    const resource = playerState?.status === AudioPlayerStatus.Playing || playerState?.status === AudioPlayerStatus.Paused ? playerState.resource : null;
+
+    return {
+      guildId: guildId,
+      connected: !!connection && connection.state.status === VoiceConnectionStatus.Ready,
+      channelId: connection?.joinConfig?.channelId,
+      playing: this.isPlaying[guildId],
+      paused: playerState?.status === AudioPlayerStatus.Paused,
+      loopMode: this.loopMode[guildId], // 0=off, 1=track, 2=queue
+      volume: this.volume,
+      filters: this.filters[guildId] || [],
+      queueSize: this.queues[guildId]?.length || 0,
+      currentTrack: this.current[guildId] ? this.getNowPlaying(guildId) : null,
+      ping: connection?.ping || { udp: null, ws: null, rtt: null },
+      uptimeSeconds: process.uptime(),
+      playerStatus: playerState?.status || 'Idle'
+    };
   }
 
-  getClientInfo() {
-    const guildCount=[...new Set(this.queue.keys())].length;
-    let total=0; this.queue.forEach(q=>total+=q.length);
-    return { version:'1.6.0', name:'Yukufy', activeSessions:guildCount, totalQueued:total, uptime:process.uptime(), memory:process.memoryUsage().heapUsed/1024/1024, spotifyAuthenticated:!!this.spotifyApi.getAccessToken(), tokenExpiresIn:Math.max(0,(this.tokenExpirationTime-Date.now())/1000) };
+  _formatSpotifyTrack(track) {
+    return {
+      id: uuidv4(),
+      title: track.name,
+      artist: track.artists?.[0]?.name || 'Unknown Artist',
+      artistId: track.artists?.[0]?.id,
+      duration: convertMsToMinutesSeconds(track.duration_ms),
+      url: track.external_urls?.spotify,
+      thumbnail: track.album?.images?.[0]?.url,
+      source: 'spotify'
+    };
+  }
+
+   /* _formatSoundCloudTrack(track) { ... } */
+
+  leave(guildId) {
+    const connection = getVoiceConnection(guildId);
+    if (!connection) {
+        this.emit('debug', `Leave called for ${guildId}, but no connection found.`);
+        return false;
+    }
+
+    this.emit('debug', `Leaving voice channel in guild ${guildId}.`);
+    const prevTimeout = this._leaveTimeouts.get(guildId);
+    if (prevTimeout) {
+        clearTimeout(prevTimeout);
+        this._leaveTimeouts.delete(guildId);
+    }
+
+    if (this.player && connection.state.subscription?.player === this.player) {
+       const currentGuild = this.player.state.resource?.metadata?.guildId;
+       if (currentGuild === guildId) {
+            this.player.stop(true);
+       }
+    }
+
+    if (connection.state.status !== VoiceConnectionStatus.Destroyed) {
+        connection.destroy();
+    }
+
+    this.emit('disconnect', { guildId });
+    return true;
+  }
+
+  getNowPlaying(guildId) {
+    this._initGuild(guildId);
+    const currentTrack = this.current[guildId];
+    if (!currentTrack || !this.isPlaying[guildId] || !this.player?.state.resource) {
+        return currentTrack;
+    }
+
+    const resource = this.player.state.resource;
+    if (resource.metadata?.id !== currentTrack.id) {
+        this.emit('warn', `getNowPlaying mismatch: player resource ID (${resource.metadata?.id}) != currentTrack ID (${currentTrack.id}) for guild ${guildId}`);
+        return currentTrack;
+    }
+
+    const elapsedMs = resource.playbackDuration || 0;
+    const elapsedFormatted = convertMsToMinutesSeconds(elapsedMs);
+
+    const durationParts = currentTrack.duration.split(':').map(Number);
+    const totalMs = ((durationParts[0] * 60) + (durationParts[1] || 0)) * 1000;
+
+    let progress = 0;
+    if (totalMs > 0) {
+        progress = parseFloat(((elapsedMs / totalMs) * 100).toFixed(2));
+        progress = Math.max(0, Math.min(100, progress));
+    }
+
+    return {
+      ...currentTrack,
+      elapsedTimeFormatted: `${elapsedFormatted}`, // MM:SS
+      durationFormatted: currentTrack.duration,   // MM:SS
+      elapsedMs: elapsedMs,
+      totalMs: totalMs,
+      progress: progress // (0-100%)
+    };
+  }
+
+  stop(guildId) {
+    this._initGuild(guildId);
+    this.emit('debug', `Stop command received for guild ${guildId}.`);
+    this.clearQueue(guildId);
+    if (this.player && this.current[guildId]) {
+        this.player.stop(true);
+    } else {
+        this.isPlaying[guildId] = false;
+        this.current[guildId] = null;
+        this._processQueue(guildId).catch(e => this.emit('error', { guildId, error: `Error processing queue after stop: ${e.message}` }));
+    }
+    return true;
+  }
+
+  clearQueue(guildId) {
+    this._initGuild(guildId);
+    const queue = this.queues[guildId];
+    if (queue.length > 0) {
+        this.queues[guildId] = [];
+        this.emit('queueClear', { guildId });
+    }
+  }
+
+  pause(guildId) {
+    if (this.player && this.isPlaying[guildId]) {
+      const success = this.player.pause();
+      if (success) {
+          this.isPlaying[guildId] = false;
+          this.emit('pause', { guildId });
+      }
+      return success;
+    }
+    return false;
+  }
+
+  resume(guildId) {
+    if (this.player && this.player.state.status === AudioPlayerStatus.Paused) {
+      const currentGuild = this.player.state.resource?.metadata?.guildId;
+      if (currentGuild === guildId) {
+          const success = this.player.unpause();
+          if (success) {
+              this.isPlaying[guildId] = true;
+              this.emit('resume', { guildId });
+          }
+          return success;
+      }
+    }
+    return false;
+  }
+
+  setVolume(volume) {
+    if (isNaN(volume) || volume < 0) throw new Error('Volume must be a non-negative number.');
+    this.volume = Math.max(0, volume);
+    if (this.player?.state.resource?.volume) {
+      this.player.state.resource.volume.setVolume(this.volume / 100);
+      this.emit('volumeChange', { volume: this.volume, guildId: this.player.state.resource.metadata?.guildId });
+    } else {
+         this.emit('volumeChange', { volume: this.volume, guildId: null });
+    }
+  }
+
+  _cleanupResources(guildId) {
+    this.emit('debug', `Cleaning up resources for guild ${guildId}`);
+    const leaveTimeout = this._leaveTimeouts.get(guildId);
+    if (leaveTimeout) {
+        clearTimeout(leaveTimeout);
+        this._leaveTimeouts.delete(guildId);
+    }
+    delete this.queues[guildId];
+    delete this.current[guildId];
+    delete this.isPlaying[guildId];
+    delete this.loopMode[guildId];
+    delete this.filters[guildId];
   }
 }
 

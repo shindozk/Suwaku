@@ -71,7 +71,7 @@ class YukufyClient extends EventEmitter {
     this.player = null;
 
     this._setupTokenRefresh();
-    this.emit('info', { name: 'Yukufy', version: '1.7.0' });
+    this.emit('info', { name: 'Yukufy', version: '1.7.5' });
   }
 
   async _authenticateSpotify() {

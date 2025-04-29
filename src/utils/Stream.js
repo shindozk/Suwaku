@@ -1,5 +1,5 @@
-import axios from 'axios';
-import { Readable } from 'stream';
+const axios = require('axios');
+const { Readable } = require('stream');
 
 const API_KEY = process.env.RAPIDAPI_KEY || '195d9d56f0mshf2ef5b15de50facp11ef65jsn7dbd159005d4'; // Fallback only for testing
 const API_HOST = 'youtube-mp4-mp3-downloader.p.rapidapi.com';

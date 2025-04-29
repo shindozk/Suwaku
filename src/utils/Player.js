@@ -71,7 +71,7 @@ class YukufyClient extends EventEmitter {
     this.player = null;
 
     this._setupTokenRefresh();
-    this.emit('info', { name: 'Yukufy', version: '1.7.5' });
+    this.emit('info', { name: 'Yukufy', version: '1.8.0' });
   }
 
   async _authenticateSpotify() {
@@ -472,7 +472,7 @@ class YukufyClient extends EventEmitter {
   async _createAudioResource(track, seekSeconds = 0) {
     const guildId = track.guildId;
     try {
-        const query = `${track.artist} ${track.title}`.trim().replace(/[^\w\s]/gi, '');
+        const query = `${track.title} ${track.artist}`.trim().replace(/[^\w\s]/gi, '');
         this.emit('debug', `Searching YouTube for resource: "${query}"`);
         const ytResult = await ytSearch(query);
 
@@ -751,7 +751,7 @@ class YukufyClient extends EventEmitter {
            });
            return recommendations.body.tracks.map(this._formatSpotifyTrack);
         } else {
-          const query = `${track.artist} ${track.title} mix`;
+          const query = `${track.title} ${track.artist} mix`;
           const results = await ytSearch({query, pages: 1});
            return results.videos
                .filter(v => v.title.toLowerCase().includes(track.title.toLowerCase()) === false)

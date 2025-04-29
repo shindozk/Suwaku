@@ -22,15 +22,13 @@
 
 ## 🎵 Introduction
 
-**Yukufy** is a Node.js library designed to simplify the integration of music playback features into your Discord.js v14 bot. It provides a clean API for searching and streaming music from various sources (like Spotify and SoundCloud via YouTube), managing queues, controlling playback, and handling events seamlessly.
-
-This library uses `@discordjs/voice` for audio management and relies on an external streaming solution (defined in `Stream.js`) to fetch audio data. The default implementation might use APIs or direct streaming libraries.
+**Yukufy** is a Node.js library designed to simplify the integration of music playback features into your Discord.js v14 bot. It provides a clean API for searching and streaming music from various sources (like Spotify and SoundCloud), managing queues, controlling playback, and handling events seamlessly.
 
 <hr style="border: 1px solid #e0e0e0; margin: 30px 0">
 
 ## 🌟 Features
 
-* **Multi-source Search:** Find tracks on Spotify and SoundCloud (playback often utilizes YouTube).
+* **Multi-source Search:** Find tracks on Spotify and SoundCloud.
 * **Robust Queue Management:** Add, remove, move, shuffle, clear, and view the track queue.
 * **Playback Controls:** Play, pause, resume, stop, skip, loop (track/queue/off), set volume.
 * **Track Information:** Get details about the currently playing track, including progress.
@@ -45,23 +43,7 @@ This library uses `@discordjs/voice` for audio management and relies on an exter
 
 Make sure you have **Node.js v16.9.0 or higher**.
 
-You also need `libsodium-wrappers`. If you encounter issues, refer to the [discord.js documentation](https://www.google.com/search?q=https://discord.js.org/%23/docs/discord.js/main/general/welcome) for installation methods.
-
-```bash
-# Install libsodium-wrappers
-npm install libsodium-wrappers
-# or
-yarn add libsodium-wrappers
-```
-
-**(Optional) FFmpeg:** If your `Stream.js` implementation requires FFmpeg (e.g., for format conversion or specific streaming methods), you need to install it on your system or use a package like `ffmpeg-static`.
-
-```bash
-# Example using ffmpeg-static (optional)
-npm install ffmpeg-static
-# or
-yarn add ffmpeg-static
-```
+If you encounter issues, refer to the [discord.js documentation](https://discord.js.org/%23/docs/discord.js/main/general/welcome) for installation methods.
 
 <hr style="border: 1px solid #e0e0e0; margin: 30px 0">
 
@@ -234,7 +216,7 @@ const {
     Routes
 } = require('discord.js');
 const { REST } = require('@discordjs/rest');
-const { getVoiceConnection } = require('@discordjs/voice'); // Import necessary function
+
 const { YukufyClient } = require('yukufy');
 
 // --- Configuration ---
@@ -244,23 +226,8 @@ const config = {
     clientId: process.env.CLIENT_ID || 'YOUR_CLIENT_ID_HERE',
     guildId: process.env.GUILD_ID, // Optional: For testing commands in one guild
     spotifyClientId: process.env.SPOTIFY_CLIENT_ID || 'YOUR_SPOTIFY_ID_HERE',
-    spotifyClientSecret: process.env.SPOTIFY_CLIENT_SECRET || 'YOUR_SPOTIFY_SECRET_HERE',
+    spotifyClientSecret: process.env.SPOTIFY_CLIENT_SECRET || 'YOUR_SPOTIFY_SECRET_HERE'
 };
-
-// Basic validation
-if (!config.token || config.token === 'YOUR_BOT_TOKEN_HERE') {
-    console.error("FATAL ERROR: Bot token not configured!"); process.exit(1);
-}
-if (!config.clientId || config.clientId === 'YOUR_CLIENT_ID_HERE') {
-    console.error("FATAL ERROR: Client ID not configured!"); process.exit(1);
-}
-if (!config.spotifyClientId || config.spotifyClientId === 'YOUR_SPOTIFY_ID_HERE') {
-    console.error("FATAL ERROR: Spotify Client ID not configured!"); process.exit(1);
-}
-if (!config.spotifyClientSecret || config.spotifyClientSecret === 'YOUR_SPOTIFY_SECRET_HERE') {
-    console.error("FATAL ERROR: Spotify Client Secret not configured!"); process.exit(1);
-}
-
 
 // --- Discord Client Setup ---
 const client = new Client({
@@ -269,9 +236,9 @@ const client = new Client({
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.GuildVoiceStates,
-        GatewayIntentBits.MessageContent // Required for message content access if needed
+        GatewayIntentBits.MessageContent
     ],
-    partials: [ // Recommended for reliable event handling
+    partials: [
         Partials.Channel,
         Partials.Message,
         Partials.User,
@@ -288,7 +255,7 @@ const yukufy = new YukufyClient(client, {
     player: {
         defaultVolume: 75,
         leaveOnEmptyQueue: true,
-        leaveOnEmptyQueueCooldown: 30000 // 30 seconds
+        leaveOnEmptyQueueCooldown: 30000
     }
 });
 
@@ -348,7 +315,6 @@ function splitLyrics(lyrics) {
 }
 
 async function getTextChannel(guildId, channelInfo) {
-    // Fetches channel and checks permissions
     if (!channelInfo?.id) return null;
     try {
         const channel = await client.channels.fetch(channelInfo.id);
@@ -363,47 +329,64 @@ async function getTextChannel(guildId, channelInfo) {
     return null;
 }
 
-function checkVoiceChannel(interaction, requireBotConnected = false, requireSameChannel = false) {
-    // Consolidated voice channel checks
-    const voiceChannel = interaction.member?.voice?.channel;
-    if (!voiceChannel) {
-        interaction.reply({ content: 'You need to be in a voice channel!', ephemeral: true });
+// --- Modified checkVoiceChannel using only discord.js ---
+function checkVoiceChannel(interaction) {
+    const memberVoiceChannel = interaction.member?.voice?.channel;
+    if (!memberVoiceChannel) {
+        interaction.reply({
+            content: 'You need to be in a voice channel to use this command!',
+            ephemeral: true
+        });
         return null;
     }
-    const permissions = voiceChannel.permissionsFor(interaction.client.user);
-    if (!permissions?.has('Connect') || !permissions?.has('Speak')) {
-        interaction.reply({ content: 'I need permissions to join and speak in your voice channel!', ephemeral: true });
+
+    const botPermissions = memberVoiceChannel.permissionsFor(interaction.client.user);
+    if (!botPermissions?.has('Connect') || !botPermissions?.has('Speak')) {
+        interaction.reply({
+            content: 'I need permissions to join and speak in your voice channel!',
+            ephemeral: true
+        });
         return null;
     }
-    const connection = getVoiceConnection(interaction.guildId);
-    if (requireBotConnected && !connection) {
-        interaction.reply({ content: 'I\'m not connected to a voice channel!', ephemeral: true });
+
+    // Check if bot is potentially in a voice channel in the same guild using discord.js state
+    const botVoiceState = interaction.guild?.members?.me?.voice;
+    const botCurrentChannelId = botVoiceState?.channelId;
+
+    // Check if bot is already connected elsewhere in the same guild
+    // This check is less reliable than using getVoiceConnection for the actual player state.
+    if (botCurrentChannelId && botCurrentChannelId !== memberVoiceChannel.id) {
+        interaction.reply({
+            content: 'I seem to be busy in another voice channel in this server!',
+            ephemeral: true
+        });
         return null;
     }
-    if (connection && requireSameChannel && connection.joinConfig.channelId !== voiceChannel.id) {
-        interaction.reply({ content: 'You need to be in the same voice channel as me!', ephemeral: true });
-        return null;
-    }
-     if (connection && !requireBotConnected && connection.joinConfig.channelId !== voiceChannel.id) {
-        // Special case for play command if bot is already elsewhere
-         interaction.reply({ content: 'I\'m already playing music in another voice channel!', ephemeral: true });
-         return null; // Prevent joining a different channel while playing
-     }
-    return voiceChannel;
+
+    // Returns the user's voice channel if basic checks pass
+    return memberVoiceChannel;
 }
 
+// Function to check if the bot is likely connected (using discord.js state)
+// Note: Less reliable than getVoiceConnection
+function isBotConnected(interaction) {
+     return !!interaction.guild?.members?.me?.voice?.channelId;
+}
 
 // --- Define Slash Commands ---
-const commandFiles = [ // Simulate loading commands - replace with actual file loading if needed
+const commandFiles = [ // Simulate loading commands
     // Play
      { data: new SlashCommandBuilder().setName('play').setDescription('Plays a song from Spotify or SoundCloud').addStringOption(o=>o.setName('query').setDescription('Song name or URL').setRequired(true)).addStringOption(o=>o.setName('source').setDescription('Platform').addChoices({name:'Spotify',value:'spotify'},{name:'SoundCloud',value:'soundcloud'})),
         async execute(interaction) {
+            // checkVoiceChannel now handles user VC check, permissions, and if bot is elsewhere
             const voiceChannel = checkVoiceChannel(interaction);
-            if (!voiceChannel) return;
+            if (!voiceChannel) return; // Stop if basic checks fail
+
             await interaction.deferReply();
             const query = interaction.options.getString('query');
             const source = interaction.options.getString('source') || 'spotify';
             try {
+                // Player.js's play function handles joining/connection via @discordjs/voice
                 await yukufy.play({ query, voiceChannel, textChannel: interaction.channel, member: interaction.member, source });
                 await interaction.editReply(`🔍 Searching for \`${query}\`...`);
             } catch (e) { await interaction.editReply(`❌ Error: ${e.message}`).catch(()=>{}); }
@@ -412,32 +395,68 @@ const commandFiles = [ // Simulate loading commands - replace with actual file l
     // Skip
      { data: new SlashCommandBuilder().setName('skip').setDescription('Skips the current song'),
         async execute(interaction) {
-            if (!checkVoiceChannel(interaction, true, true)) return; // Require bot connected and user in same channel
-            const current = yukufy.current[interaction.guildId];
-            if (!current) return interaction.reply({content: 'Nothing is playing!', ephemeral: true});
+            const guildId = interaction.guildId;
+            if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+            const memberVoiceChannel = interaction.member?.voice?.channel;
+            const botVoiceChannelId = interaction.guild?.members?.me?.voice?.channelId;
+
+            if (!memberVoiceChannel) {
+                 return interaction.reply({ content: 'You need to be in a voice channel!', ephemeral: true });
+            }
+            if (!botVoiceChannelId) {
+                return interaction.reply({ content: 'I\'m not in a voice channel!', ephemeral: true });
+            }
+            if (botVoiceChannelId !== memberVoiceChannel.id) {
+                 return interaction.reply({ content: 'You must be in the same voice channel as me!', ephemeral: true });
+            }
+
+            const current = yukufy.current[guildId]; // Check if player thinks it's playing
+            if (!current) {
+                return interaction.reply({content: 'Nothing seems to be playing!', ephemeral: true});
+            }
+
             try {
-                yukufy.skip(interaction.guildId);
+                // Player.js skip method requires guildId
+                yukufy.skip(guildId);
                 await interaction.reply(`⏭️ Skipped **${current.title}**.`);
-            } catch (e) { await interaction.reply({content: `❌ Error: ${e.message}`, ephemeral: true}); }
+            } catch (e) { await interaction.reply({content: `❌ Error skipping: ${e.message}`, ephemeral: true}); }
         }
     },
     // Stop
      { data: new SlashCommandBuilder().setName('stop').setDescription('Stops playback and clears the queue'),
         async execute(interaction) {
-             if (!checkVoiceChannel(interaction, true, true)) return;
+            const guildId = interaction.guildId;
+            if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+             const memberVoiceChannel = interaction.member?.voice?.channel;
+             const botVoiceChannelId = interaction.guild?.members?.me?.voice?.channelId;
+
+             if (!memberVoiceChannel) {
+                  return interaction.reply({ content: 'You need to be in a voice channel!', ephemeral: true });
+             }
+             if (!botVoiceChannelId) {
+                 return interaction.reply({ content: 'I\'m not in a voice channel!', ephemeral: true });
+             }
+             if (botVoiceChannelId !== memberVoiceChannel.id) {
+                  return interaction.reply({ content: 'You must be in the same voice channel as me!', ephemeral: true });
+             }
+
             try {
-                yukufy.stop(interaction.guildId);
+                yukufy.stop(guildId);
                 await interaction.reply('⏹️ Stopped playback and cleared queue.');
-            } catch (e) { await interaction.reply({content: `❌ Error: ${e.message}`, ephemeral: true}); }
+            } catch (e) { await interaction.reply({content: `❌ Error stopping: ${e.message}`, ephemeral: true}); }
         }
     },
     // Queue
     { data: new SlashCommandBuilder().setName('queue').setDescription('Shows the music queue').addIntegerOption(o=>o.setName('page').setDescription('Page number').setMinValue(1)),
         async execute(interaction) {
             const guildId = interaction.guildId;
+            if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
             const queue = yukufy.getQueue(guildId);
             const current = yukufy.getNowPlaying(guildId);
-            if (!current && queue.length === 0) return interaction.reply({ content: 'Queue is empty.', ephemeral: true });
+            if (!current && queue.length === 0) return interaction.reply({ content: 'Queue is empty and nothing is playing.', ephemeral: true });
 
             const itemsPerPage = 10;
             const totalItems = queue.length;
@@ -450,53 +469,300 @@ const commandFiles = [ // Simulate loading commands - replace with actual file l
             const embed = new EmbedBuilder().setTitle('🎵 Music Queue').setColor('#1ED760').setTimestamp();
             if (current) {
                 const time = current.elapsedTimeFormatted ? `${current.elapsedTimeFormatted}/${current.durationFormatted}` : current.durationFormatted;
-                embed.addFields({ name: '▶️ Now Playing', value: `[${current.title}](${current.url}) | ${time}\nRequested by: ${current.member?.displayName}` });
+                embed.addFields({ name: '▶️ Now Playing', value: `[${current.title}](${current.url}) | ${time}\nRequested by: ${current.member?.displayName || 'Unknown'}` });
                 embed.addFields({ name: 'Progress', value: createProgressBar(current.progress) });
+            } else {
+                 embed.addFields({ name: '▶️ Now Playing', value: 'Nothing is currently playing.' });
             }
             if (currentItems.length > 0) {
-                const list = currentItems.map((t, i) => `**${startIdx + i + 1}.** [${t.title}](${t.url}) \`${t.duration}\`\n Requested by: ${t.member?.displayName}`).join('\n');
+                const list = currentItems.map((t, i) => `**${startIdx + i + 1}.** [${t.title}](${t.url}) \`${t.duration || 'N/A'}\`\n Requested by: ${t.member?.displayName || 'Unknown'}`).join('\n');
                 embed.addFields({ name: `📄 Queue (Page ${page}/${pageCount})`, value: list.substring(0, 1020) + (list.length > 1020 ? '...' : '') });
+            } else if (page > 1) {
+                 embed.addFields({ name: `📄 Queue (Page ${page}/${pageCount})`, value: 'There are no songs on this page.' });
             }
             embed.addFields({ name: '📊 Stats', value: `**Songs:** ${totalItems} | **Duration:** ${formatDuration(queue)}` });
             embed.setFooter({ text: `Use /queue <page> | ${client.user.username}` });
             await interaction.reply({ embeds: [embed] });
         }
     },
-    // Add other commands similarly (Pause, Resume, Leave, Loop, Shuffle, Remove, Move, NowPlaying, Volume, Lyrics, Clear, Status, Help)
-    // Example: Pause
+    // Pause
     { data: new SlashCommandBuilder().setName('pause').setDescription('Pauses playback'),
         async execute(interaction) {
-             if (!checkVoiceChannel(interaction, true, true)) return;
-             const status = yukufy.getStatus(interaction.guildId);
-             if (!status.playing) return interaction.reply({content: 'Not playing anything.', ephemeral: true});
-             if (yukufy.pause(interaction.guildId)) await interaction.reply('⏸️ Paused.');
-             else await interaction.reply({content: 'Could not pause.', ephemeral: true});
+            const guildId = interaction.guildId;
+            if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+            const memberVoiceChannel = interaction.member?.voice?.channel;
+            const botVoiceChannelId = interaction.guild?.members?.me?.voice?.channelId;
+
+            if (!memberVoiceChannel) return interaction.reply({ content: 'You need to be in a voice channel!', ephemeral: true });
+            if (!botVoiceChannelId) return interaction.reply({ content: 'I\'m not in a voice channel!', ephemeral: true });
+            if (botVoiceChannelId !== memberVoiceChannel.id) return interaction.reply({ content: 'You must be in the same voice channel as me!', ephemeral: true });
+
+            const status = yukufy.getStatus(guildId);
+            if (!status.playing) return interaction.reply({content: 'Not playing anything to pause.', ephemeral: true});
+
+            if (yukufy.pause(guildId)) await interaction.reply('⏸️ Paused.');
+            else await interaction.reply({content: 'Could not pause.', ephemeral: true});
         }
     },
-    // Example: Resume
+    // Resume
     { data: new SlashCommandBuilder().setName('resume').setDescription('Resumes playback'),
         async execute(interaction) {
-             if (!checkVoiceChannel(interaction, true, true)) return;
-             const status = yukufy.getStatus(interaction.guildId);
-             if (!status.paused) return interaction.reply({content: 'Not paused.', ephemeral: true});
-             if (yukufy.resume(interaction.guildId)) await interaction.reply('▶️ Resumed.');
+             const guildId = interaction.guildId;
+             if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+             const memberVoiceChannel = interaction.member?.voice?.channel;
+             const botVoiceChannelId = interaction.guild?.members?.me?.voice?.channelId;
+
+             if (!memberVoiceChannel) return interaction.reply({ content: 'You need to be in a voice channel!', ephemeral: true });
+             if (!botVoiceChannelId) return interaction.reply({ content: 'I\'m not in a voice channel!', ephemeral: true });
+             if (botVoiceChannelId !== memberVoiceChannel.id) return interaction.reply({ content: 'You must be in the same voice channel as me!', ephemeral: true });
+
+             const status = yukufy.getStatus(guildId);
+             if (!status.paused) return interaction.reply({content: 'Playback is not paused.', ephemeral: true});
+
+             if (yukufy.resume(guildId)) await interaction.reply('▶️ Resumed.');
              else await interaction.reply({content: 'Could not resume.', ephemeral: true});
         }
     },
-     // Example: Help
-    { data: new SlashCommandBuilder().setName('help').setDescription('Shows available commands'),
+    // Leave
+     { data: new SlashCommandBuilder().setName('leave').setDescription('Makes the bot leave the voice channel'),
+        async execute(interaction) {
+            const guildId = interaction.guildId;
+            if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+            const memberVoiceChannel = interaction.member?.voice?.channel;
+            const botVoiceChannelId = interaction.guild?.members?.me?.voice?.channelId;
+
+            if (!memberVoiceChannel) return interaction.reply({ content: 'You need to be in a voice channel!', ephemeral: true });
+            if (!botVoiceChannelId) return interaction.reply({ content: 'I\'m not in a voice channel!', ephemeral: true });
+            if (botVoiceChannelId !== memberVoiceChannel.id) return interaction.reply({ content: 'You must be in the same voice channel as me to make me leave!', ephemeral: true });
+
+             try {
+                // Yukufy leave handles stopping and cleanup
+                 yukufy.leave(guildId);
+                 await interaction.reply('👋 Leaving the voice channel!');
+             } catch (e) { await interaction.reply({content: `❌ Error leaving: ${e.message}`, ephemeral: true}); }
+         }
+     },
+    // Loop
+     { data: new SlashCommandBuilder().setName('loop').setDescription('Sets the loop mode').addStringOption(o=>o.setName('mode').setDescription('Loop mode').setRequired(true).addChoices({name:'Off',value:'0'}, {name:'Track',value:'1'}, {name:'Queue',value:'2'})),
+        async execute(interaction) {
+             const guildId = interaction.guildId;
+             if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+             const memberVoiceChannel = interaction.member?.voice?.channel;
+             const botVoiceChannelId = interaction.guild?.members?.me?.voice?.channelId;
+
+             if (!memberVoiceChannel) return interaction.reply({ content: 'You need to be in a voice channel!', ephemeral: true });
+             if (!botVoiceChannelId) return interaction.reply({ content: 'I\'m not connected.', ephemeral: true });
+             if (botVoiceChannelId !== memberVoiceChannel.id) return interaction.reply({ content: 'You must be in the same voice channel as me!', ephemeral: true });
+
+             const mode = parseInt(interaction.options.getString('mode'), 10);
+             try {
+                 yukufy.setLoopMode(guildId, mode);
+                 const modeText = ['Off', 'Track', 'Queue'][mode] || 'Off';
+                 await interaction.reply(`🔄 Loop mode set to: ${modeText}`);
+             } catch (e) { await interaction.reply({content: `❌ Error setting loop mode: ${e.message}`, ephemeral: true}); }
+         }
+     },
+    // Shuffle
+     { data: new SlashCommandBuilder().setName('shuffle').setDescription('Shuffles the queue'),
+        async execute(interaction) {
+             const guildId = interaction.guildId;
+             if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+             const memberVoiceChannel = interaction.member?.voice?.channel;
+             const botVoiceChannelId = interaction.guild?.members?.me?.voice?.channelId;
+
+             if (!memberVoiceChannel) return interaction.reply({ content: 'You need to be in a voice channel!', ephemeral: true });
+             if (!botVoiceChannelId) return interaction.reply({ content: 'I\'m not connected.', ephemeral: true });
+             if (botVoiceChannelId !== memberVoiceChannel.id) return interaction.reply({ content: 'You must be in the same voice channel as me!', ephemeral: true });
+
+             try {
+                 const queue = yukufy.shuffle(guildId);
+                 if (!queue || queue.length < 2) return interaction.reply({ content: 'Need at least 2 songs to shuffle!', ephemeral: true });
+                 await interaction.reply(`🔀 Queue shuffled!`);
+             } catch (e) { await interaction.reply({content: `❌ Error shuffling: ${e.message}`, ephemeral: true}); }
+         }
+     },
+     // Remove
+     { data: new SlashCommandBuilder().setName('remove').setDescription('Removes a song by position').addIntegerOption(o=>o.setName('position').setDescription('Position in queue').setRequired(true).setMinValue(1)),
+        async execute(interaction) {
+             const guildId = interaction.guildId;
+             if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+             const memberVoiceChannel = interaction.member?.voice?.channel;
+             const botVoiceChannelId = interaction.guild?.members?.me?.voice?.channelId;
+
+             if (!memberVoiceChannel) return interaction.reply({ content: 'You need to be in a voice channel!', ephemeral: true });
+             if (!botVoiceChannelId) return interaction.reply({ content: 'I\'m not connected.', ephemeral: true });
+             if (botVoiceChannelId !== memberVoiceChannel.id) return interaction.reply({ content: 'You must be in the same voice channel as me!', ephemeral: true });
+
+             const position = interaction.options.getInteger('position');
+             const indexToRemove = position - 1;
+             try {
+                 const removed = yukufy.removeFromQueue(guildId, indexToRemove);
+                 await interaction.reply(`🗑️ Removed: **${removed.title}**`);
+             } catch (e) { await interaction.reply({content: `❌ Error removing: ${e.message}`, ephemeral: true}); }
+         }
+     },
+     // Move
+     { data: new SlashCommandBuilder().setName('move').setDescription('Moves a song in the queue').addIntegerOption(o=>o.setName('from').setDescription('Current position').setRequired(true).setMinValue(1)).addIntegerOption(o=>o.setName('to').setDescription('New position').setRequired(true).setMinValue(1)),
+        async execute(interaction) {
+             const guildId = interaction.guildId;
+             if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+             const memberVoiceChannel = interaction.member?.voice?.channel;
+             const botVoiceChannelId = interaction.guild?.members?.me?.voice?.channelId;
+
+             if (!memberVoiceChannel) return interaction.reply({ content: 'You need to be in a voice channel!', ephemeral: true });
+             if (!botVoiceChannelId) return interaction.reply({ content: 'I\'m not connected.', ephemeral: true });
+             if (botVoiceChannelId !== memberVoiceChannel.id) return interaction.reply({ content: 'You must be in the same voice channel as me!', ephemeral: true });
+
+             const fromPos = interaction.options.getInteger('from');
+             const toPos = interaction.options.getInteger('to');
+             const fromIndex = fromPos - 1;
+             const toIndex = toPos - 1;
+             try {
+                 yukufy.moveInQueue(guildId, fromIndex, toIndex);
+                 await interaction.reply(`↔️ Moved song from #${fromPos} to #${toPos}.`);
+             } catch (e) { await interaction.reply({content: `❌ Error moving: ${e.message}`, ephemeral: true}); }
+         }
+     },
+     // Now Playing
+     { data: new SlashCommandBuilder().setName('nowplaying').setDescription('Shows the currently playing song'),
+        async execute(interaction) {
+             const guildId = interaction.guildId;
+             if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+             const current = yukufy.getNowPlaying(guildId);
+             if (!current) return interaction.reply({ content: 'Nothing is playing.', ephemeral: true });
+
+             const embed = new EmbedBuilder().setTitle('▶️ Now Playing').setColor('#1ED760').setTimestamp();
+             if (current.thumbnail) embed.setThumbnail(current.thumbnail);
+             embed.setDescription(`**[${current.title}](${current.url})**\n**By:** ${current.artist}`);
+             const time = current.elapsedTimeFormatted ? `${current.elapsedTimeFormatted}/${current.durationFormatted}` : current.durationFormatted;
+             const source = current.source?.charAt(0).toUpperCase() + current.source?.slice(1);
+             embed.addFields(
+                 { name: 'Duration', value: time || 'N/A', inline: true },
+                 { name: 'Requested by', value: current.member?.displayName || 'Unknown', inline: true },
+                 { name: 'Source', value: source || 'N/A', inline: true }
+             );
+             embed.addFields({ name: 'Progress', value: createProgressBar(current.progress) });
+             await interaction.reply({ embeds: [embed] });
+         }
+     },
+     // Volume
+     { data: new SlashCommandBuilder().setName('volume').setDescription('Sets the volume').addIntegerOption(o=>o.setName('level').setDescription('Volume level (0-100+)').setRequired(true).setMinValue(0)),
+        async execute(interaction) {
+            const guildId = interaction.guildId;
+            if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+            const memberVoiceChannel = interaction.member?.voice?.channel;
+            const botVoiceChannelId = interaction.guild?.members?.me?.voice?.channelId;
+
+            if (!memberVoiceChannel) return interaction.reply({ content: 'You need to be in a voice channel!', ephemeral: true });
+            if (!botVoiceChannelId) return interaction.reply({ content: 'I\'m not connected.', ephemeral: true });
+            if (botVoiceChannelId !== memberVoiceChannel.id) return interaction.reply({ content: 'You must be in the same voice channel as me!', ephemeral: true });
+
+            const level = interaction.options.getInteger('level');
+            try {
+                yukufy.setVolume(level);
+                await interaction.reply(`🔊 Volume set to ${level}%.`);
+            } catch (e) { await interaction.reply({content: `❌ Error setting volume: ${e.message}`, ephemeral: true}); }
+         }
+     },
+     // Lyrics
+     { data: new SlashCommandBuilder().setName('lyrics').setDescription('Gets lyrics for the current song'),
+        async execute(interaction) {
+             const guildId = interaction.guildId;
+             if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+             const current = yukufy.current[guildId];
+             if (!current) return interaction.reply({ content: 'Nothing is playing.', ephemeral: true });
+
+             await interaction.deferReply();
+             try {
+                 const lyricsData = await yukufy.getLyrics(guildId);
+                 const chunks = splitLyrics(lyricsData.lyrics);
+                 if (!chunks || chunks.length === 0) return interaction.editReply('Could not find lyrics (or lyrics are empty).');
+
+                 const embed = new EmbedBuilder()
+                     .setTitle(`🎤 Lyrics: ${lyricsData.title}`)
+                     .setURL(lyricsData.sourceURL).setColor('#FFFF00')
+                     .setDescription(chunks[0])
+                     .setFooter({ text: `Artist: ${lyricsData.artist} | Source: Genius` });
+                 await interaction.editReply({ embeds: [embed] });
+
+                 for (let i = 1; i < chunks.length; i++) {
+                     await interaction.followUp({ embeds: [new EmbedBuilder().setColor('#FFFF00').setDescription(chunks[i])] }).catch(console.error);
+                 }
+             } catch (e) { await interaction.editReply(`❌ Error fetching lyrics: ${e.message}`).catch(()=>{}); }
+         }
+     },
+     // Clear
+     { data: new SlashCommandBuilder().setName('clear').setDescription('Clears the queue'),
+        async execute(interaction) {
+             const guildId = interaction.guildId;
+             if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+
+             const memberVoiceChannel = interaction.member?.voice?.channel;
+             const botVoiceChannelId = interaction.guild?.members?.me?.voice?.channelId;
+
+             if (!memberVoiceChannel) return interaction.reply({ content: 'You need to be in a voice channel!', ephemeral: true });
+             if (!botVoiceChannelId) return interaction.reply({ content: 'I\'m not connected.', ephemeral: true });
+             if (botVoiceChannelId !== memberVoiceChannel.id) return interaction.reply({ content: 'You must be in the same voice channel as me!', ephemeral: true });
+
+             const queue = yukufy.getQueue(guildId);
+             if (queue.length === 0) return interaction.reply({ content: 'Queue is already empty!', ephemeral: true });
+
+             try {
+                 yukufy.clearQueue(guildId);
+                 await interaction.reply('🧹 Queue cleared!');
+             } catch (e) { await interaction.reply({content: `❌ Error clearing queue: ${e.message}`, ephemeral: true}); }
+         }
+     },
+     // Status
+     { data: new SlashCommandBuilder().setName('status').setDescription('Shows player status'),
+        async execute(interaction) {
+             const guildId = interaction.guildId;
+             if (!guildId) return interaction.reply({ content: 'Server command only.', ephemeral: true });
+             try {
+                 const status = yukufy.getStatus(guildId);
+                 const loopModeMap = ['Off', 'Track', 'Queue'];
+                 const uptime = process.uptime(); // Get global process uptime
+                 const embed = new EmbedBuilder().setTitle('ℹ️ Player Status').setColor('#4A90E2').setTimestamp()
+                     .addFields(
+                         { name: 'Connected', value: status.connected ? `✅ Yes (VC: ${status.channelId})` : '❌ No', inline: true },
+                         { name: 'Playing', value: status.playing ? '▶️ Yes' : '⏹️ No', inline: true },
+                         { name: 'Paused', value: status.paused ? '⏸️ Yes' : '▶️ No', inline: true },
+                         { name: 'Volume', value: `🔊 ${status.volume}%`, inline: true },
+                         { name: 'Loop Mode', value: `🔄 ${loopModeMap[status.loopMode] || 'Off'}`, inline: true },
+                         { name: 'Queue Size', value: `🎵 ${status.queueSize}`, inline: true },
+                         { name: 'Voice Ping', value: `📶 ${status.ping?.rtt ?? 'N/A'} ms`, inline: true },
+                         { name: 'Player State', value: `⚙️ ${status.playerStatus}`, inline: true },
+                         { name: 'Bot Uptime', value: `⏱️ ${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`, inline: true }
+                         // { name: 'Filters', value: status.filters?.length > 0 ? status.filters.join(', ') : 'None', inline: false } // Filters not fully implemented in Player.js example
+                     );
+                 if (status.currentTrack) {
+                     const time = status.currentTrack.elapsedTimeFormatted ? `${status.currentTrack.elapsedTimeFormatted}/${status.currentTrack.durationFormatted}`: status.currentTrack.durationFormatted;
+                     embed.addFields({ name: 'Current Track', value: `[${status.currentTrack.title}](${status.currentTrack.url}) | ${time || 'N/A'}` });
+                 }
+                 await interaction.reply({ embeds: [embed] });
+             } catch (e) { await interaction.reply({content: `❌ Error getting status: ${e.message}`, ephemeral: true}); }
+         }
+     },
+     // Help
+     { data: new SlashCommandBuilder().setName('help').setDescription('Shows available commands'),
         async execute(interaction) {
             const cmdList = client.commands.map(cmd => `\`/${cmd.data.name}\` - ${cmd.data.description}`).join('\n');
-            const embed = new EmbedBuilder()
-                .setTitle('🤖 Bot Commands')
-                .setColor('#5865F2')
-                .setDescription(cmdList || 'No commands found.')
-                .setFooter({ text: `${client.user.username}` });
+            const embed = new EmbedBuilder().setTitle('🤖 Bot Commands').setColor('#5865F2').setDescription(cmdList || 'No commands found.').setFooter({ text: client.user.username });
             await interaction.reply({ embeds: [embed], ephemeral: true });
         }
     },
-    // ... (Add all other commands here following the pattern)
 ];
+
 
 // --- Register Commands ---
 commandFiles.forEach(cmd => client.commands.set(cmd.data.name, cmd));
@@ -513,9 +779,9 @@ yukufy.on('trackStart', async (track) => {
         .setDescription(`**[${track.title}](${track.url})**\nBy: ${track.artist}`)
         .setThumbnail(track.thumbnail).setTimestamp()
         .addFields(
-            { name: 'Duration', value: `\`${track.duration}\``, inline: true },
-            { name: 'Requested by', value: `${track.member?.displayName}`, inline: true },
-            { name: 'Source', value: `${track.source}`, inline: true }
+            { name: 'Duration', value: `\`${track.duration || 'N/A'}\``, inline: true },
+            { name: 'Requested by', value: `${track.member?.displayName || 'Unknown'}`, inline: true },
+            { name: 'Source', value: `${track.source?.charAt(0).toUpperCase() + track.source?.slice(1) || 'N/A'}`, inline: true }
         ).setFooter({ text: `Volume: ${yukufy.volume}%` });
     channel.send({ embeds: [embed] }).catch(console.error);
 });
@@ -528,24 +794,23 @@ yukufy.on('trackAdd', async ({ track, queue, guildId }) => {
         .setDescription(`**[${track.title}](${track.url})**\nBy: ${track.artist}`)
         .setThumbnail(track.thumbnail).setTimestamp()
         .addFields(
-            { name: 'Duration', value: `\`${track.duration}\``, inline: true },
+            { name: 'Duration', value: `\`${track.duration || 'N/A'}\``, inline: true },
             { name: 'Position', value: `#${queue.length}`, inline: true },
-            { name: 'Requested by', value: `${track.member?.displayName}`, inline: true }
+            { name: 'Requested by', value: `${track.member?.displayName || 'Unknown'}`, inline: true }
         );
     channel.send({ embeds: [embed] }).catch(console.error);
 });
 
-yukufy.on('queueEnd', async (guildId) => {
+yukufy.on('queueEnd', async (guildId) => { // Made async
     const guild = client.guilds.cache.get(guildId);
     if (!guild) return;
-    // Try to find a reasonable channel to post to
     const anyTextChannel = guild.channels.cache.find(c => c.isTextBased() && c.permissionsFor(guild.members.me)?.has('SendMessages'));
     if (anyTextChannel) {
         anyTextChannel.send({ embeds: [new EmbedBuilder().setColor('#FF6B6B').setTitle('🏁 Queue Ended').setDescription('Add more songs or I\'ll leave soon!').setTimestamp()] }).catch(console.error);
     }
 });
 
-yukufy.on('disconnect', async ({ guildId }) => {
+yukufy.on('disconnect', async ({ guildId }) => { // Made async, assuming data is { guildId }
      const guild = client.guilds.cache.get(guildId);
      if (!guild) return;
      const anyTextChannel = guild.channels.cache.find(c => c.isTextBased() && c.permissionsFor(guild.members.me)?.has('SendMessages'));
@@ -554,7 +819,7 @@ yukufy.on('disconnect', async ({ guildId }) => {
      }
 });
 
-yukufy.on('error', async ({ guildId, track, error }) => {
+yukufy.on('error', async ({ guildId, track, error }) => { // Made async
     console.error(`[Yukufy Error] Guild: ${guildId || 'Global'} | Track: ${track?.title || 'N/A'} | Error:`, error);
     const channel = track ? await getTextChannel(guildId, track.textChannel) : null;
     if (channel) {
@@ -583,8 +848,10 @@ client.on('ready', async () => {
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const command = client.commands.get(interaction.commandName);
-    if (!command) return;
-    // console.log(`[Interaction] Command '${interaction.commandName}' received from ${interaction.user.tag}`);
+    if (!command) {
+         await interaction.reply({ content: 'Command not found!', ephemeral: true }).catch(() => {});
+         return;
+    }
     try {
         await command.execute(interaction);
     } catch (error) {
@@ -619,16 +886,10 @@ client.login(config.token).catch(err => {
 
 <hr style="border: 1px solid #e0e0e0; margin: 30px 0">
 
-## ⚠️ Notes & Limitations
-
-  * **Seek Command:** The reliability of the `/seek` command depends *heavily* on the implementation in your `Stream.js` file. If using external APIs that process the entire file first, seeking during playback is generally **not supported**. Direct streaming methods (like `ytdl-core` + `ffmpeg`) offer better seeking capabilities.
-  * **Dependencies:** Ensure all required dependencies (like `axios` or `ffmpeg`) for your chosen `Stream.js` implementation are installed.
-
-<hr style="border: 1px solid #e0e0e0; margin: 30px 0">
-
 ## 🤝 Community & Support
 
-  * **Discord:** [Join our Support Server](https://www.google.com/url?sa=E&source=gmail&q=https://discord.gg/wV2WamExr5) * **GitHub:** [Report Issues](https://www.google.com/search?q=https://github.com/shindozk/yukufy/issues) | [Star the Repo](https://www.google.com/url?sa=E&source=gmail&q=https://github.com/shindozk/yukufy)<hr style="border: 1px solid #e0e0e0; margin: 30px 0">
+  * **Discord:** [Join our Support Server](https://discord.gg/wV2WamExr5) 
+  * **GitHub:** [Report Issues](https://github.com/shindozk/yukufy/issues) | [Star the Repo](https://github.com/shindozk/yukufy)<hr style="border: 1px solid #e0e0e0; margin: 30px 0">
 
 ## 📜 License
 

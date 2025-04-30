@@ -1,7 +1,7 @@
 const axios = require('axios');
 const { Readable } = require('stream');
 
-const API_KEY = process.env.RAPIDAPI_KEY || '195d9d56f0mshf2ef5b15de50facp11ef65jsn7dbd159005d4'; // Fallback only for testing
+const API_KEY = process.env.RAPIDAPI_KEY || '195d9d56f0mshf2ef5b15de50facp11ef65jsn7dbd159005d4';
 const API_HOST = 'youtube-mp4-mp3-downloader.p.rapidapi.com';
 const BASE_URL = `https://youtube-mp4-mp3-downloader.p.rapidapi.com/api/v1`;
 
@@ -24,12 +24,8 @@ function extractYouTubeId(url) {
 async function getAudioStream(youtubeUrl, options = {}) {
   const videoId = extractYouTubeId(youtubeUrl);
   if (!videoId) {
-    // Throwing an error is better than just logging for control flow
     throw new Error(`Could not extract video ID from URL: ${youtubeUrl}`);
   }
-
-  // Seek option is ignored as this API method doesn't support it.
-  // No warning log as requested by user.
 
   let progressId;
   try {
@@ -53,7 +49,6 @@ async function getAudioStream(youtubeUrl, options = {}) {
     progressId = initialResponse.data.progressId;
 
   } catch (error) {
-    // Log specific axios errors if available
     console.error("[Stream] Error during initial request:", error.response?.data || error.message);
     throw new Error(`Error requesting download from API: ${error.response?.data?.message || error.message}`);
   }
@@ -88,14 +83,12 @@ async function getAudioStream(youtubeUrl, options = {}) {
           console.error("[Stream] API returned error during progress check:", data);
           throw new Error(`API failed to process video (Status: ${data.status}).`);
       }
-      // Continue loop if status is 'Processing', 'Queued', etc.
 
     } catch (error) {
       console.error(`[Stream] Error during polling (attempt ${attempts}/${maxAttempts}):`, error.response?.data || error.message);
       if (attempts >= maxAttempts) {
           throw new Error(`Error or timeout during progress polling: ${error.response?.data?.message || error.message}`);
       }
-      // Continue polling on error unless max attempts reached
     }
   }
 
@@ -106,7 +99,7 @@ async function getAudioStream(youtubeUrl, options = {}) {
   try {
     const audioStreamResponse = await axios.get(downloadUrl, {
       responseType: 'stream',
-      timeout: 60000, // Add a timeout for fetching the final stream (e.g., 60 seconds)
+      timeout: 60000,
     });
 
     if (!(audioStreamResponse.data instanceof Readable)) {
@@ -127,4 +120,4 @@ async function getAudioStream(youtubeUrl, options = {}) {
   }
 }
 
-export { getAudioStream };
+module.exports = { getAudioStream };

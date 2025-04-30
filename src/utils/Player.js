@@ -71,7 +71,7 @@ class YukufyClient extends EventEmitter {
     this.player = null;
 
     this._setupTokenRefresh();
-    this.emit('info', { name: 'Yukufy', version: '1.8.0' });
+    this.emit('info', { name: 'Yukufy', version: '1.8.5' });
   }
 
   async _authenticateSpotify() {
@@ -104,57 +104,183 @@ class YukufyClient extends EventEmitter {
     }
   }
 
+  _formatSpotifyTrack(spotifyTrack) {
+    if (!spotifyTrack || !spotifyTrack.id) return null;
+    const artist = spotifyTrack.artists?.[0];
+    const albumImage = spotifyTrack.album?.images?.[0];
+    return {
+      id: uuidv4(),
+      url: spotifyTrack.external_urls?.spotify,
+      title: spotifyTrack.name,
+      artist: artist?.name || 'Unknown Artist',
+      duration: convertMsToMinutesSeconds(spotifyTrack.duration_ms),
+      source: 'spotify',
+      likes: spotifyTrack.popularity,
+      thumbnail: albumImage?.url,
+      artistId: artist?.id
+    };
+  }
+
+  _formatSoundCloudTrack(scTrack) {
+    if (!scTrack || !scTrack.permalink_url) return null;
+    const user = scTrack.user;
+    return {
+      id: uuidv4(),
+      url: scTrack.permalink_url,
+      title: scTrack.title,
+      artist: user?.username || 'Unknown Artist',
+      duration: convertMsToMinutesSeconds(scTrack.duration),
+      source: 'soundcloud',
+      likes: scTrack.likes_count,
+      thumbnail: scTrack.artwork_url || user?.avatar_url
+    };
+  }
+
   async search(query, source = 'spotify') {
     await this._authenticateSpotify();
-    if (!query) throw new Error('Search query required');
+    if (!query) throw new Error('Search query cannot be empty.');
     query = query.trim();
-    this.emit('debug', `Searching for "${query}" on ${source}`);
+    const originalQuery = query;
+    this.emit('debug', `Processing search for query: "${originalQuery}" with source: ${source}`);
+
+    let isSpotifyUrl = false;
+    let isSoundCloudUrl = false;
+    let spotifyTrackId = null;
+    let soundCloudUrl = null;
 
     try {
-        switch (source) {
-          case 'spotify': {
-            const res = await this.spotifyApi.searchTracks(query, { limit: 7 });
-            const t = res.body.tracks?.items?.[0];
-            return t ? [{
-              url: t.external_urls.spotify,
-              title: t.name,
-              artist: t.artists[0]?.name || 'Unknown Artist',
-              duration: convertMsToMinutesSeconds(t.duration_ms),
-              source: 'spotify',
-              likes: t.popularity,
-              thumbnail: t.album?.images?.[0]?.url,
-              artistId: t.artists[0]?.id
-            }] : [];
-          }
-          case 'soundcloud': {
-            if (!this.soundcloudClientId) {
-                 try {
-                     this.soundcloudClientId = await SoundCloud.keygen();
-                     this.emit('debug', 'SoundCloud client ID obtained.');
-                 } catch (scError) {
-                     this.emit('error', { error: `Failed to get SoundCloud client ID: ${scError.message}`});
-                     throw new Error('Could not initialize SoundCloud search.');
-                 }
+        const url = new URL(query);
+        if (url.hostname.includes('spotify.com') && url.pathname.includes('/track/')) {
+            isSpotifyUrl = true;
+            spotifyTrackId = url.pathname.split('/').pop();
+            if (!spotifyTrackId) throw new Error('Invalid Spotify track URL (missing ID).');
+            source = 'spotify';
+            this.emit('debug', `Detected Spotify track URL. ID: ${spotifyTrackId}`);
+        } else if (url.hostname.includes('soundcloud.com') && url.pathname.split('/').length > 2) {
+             isSoundCloudUrl = true;
+             soundCloudUrl = query;
+             source = 'soundcloud';
+             this.emit('debug', `Detected SoundCloud track URL: ${soundCloudUrl}`);
+        }
+    } catch (e) {
+        this.emit('debug', `Query is not a standard URL. Treating as text search for ${source}.`);
+    }
+
+    try {
+        if (isSpotifyUrl && spotifyTrackId) {
+            this.emit('debug', `Workspaceing exact Spotify track ID: ${spotifyTrackId}`);
+            const trackData = await this.spotifyApi.getTrack(spotifyTrackId);
+            if (!trackData.body) throw new Error(`Track with ID ${spotifyTrackId} not found on Spotify.`);
+            const formatted = this._formatSpotifyTrack(trackData.body);
+            return formatted ? [formatted] : [];
+
+        } else if (isSoundCloudUrl && soundCloudUrl) {
+             this.emit('debug', `Workspaceing exact SoundCloud info for URL: ${soundCloudUrl}`);
+             if (!this.soundcloudClientId) {
+                 try { this.soundcloudClientId = await SoundCloud.keygen(); }
+                 catch (scError) { throw new Error('Could not initialize SoundCloud.'); }
+             }
+             const trackData = await scdl.getInfo(soundCloudUrl, this.soundcloudClientId);
+             if (!trackData) throw new Error(`Track not found or invalid SoundCloud URL: ${soundCloudUrl}`);
+             const formatted = this._formatSoundCloudTrack(trackData);
+             return formatted ? [formatted] : [];
+
+        } else {
+            this.emit('debug', `Performing text search for "${originalQuery}" on ${source}`);
+            let results = [];
+            let selectedTrack = null;
+
+            switch (source) {
+                case 'spotify': {
+                    const searchResults = await this.spotifyApi.searchTracks(query, { limit: 5 });
+                    results = searchResults.body.tracks?.items || [];
+                    if (results.length === 0) return [];
+
+                    selectedTrack = this._findBestMatch(originalQuery, results, 'spotify');
+                    const formatted = this._formatSpotifyTrack(selectedTrack || results[0]);
+                    return formatted ? [formatted] : [];
+                }
+                case 'soundcloud': {
+                    if (!this.soundcloudClientId) {
+                        try { this.soundcloudClientId = await SoundCloud.keygen(); }
+                        catch (scError) { throw new Error('Could not initialize SoundCloud search.'); }
+                    }
+                    const searchResults = await scdl.search({ query, limit: 5, resourceType: 'tracks', client_id: this.soundcloudClientId });
+                    results = searchResults?.collection || [];
+                     if (results.length === 0) return [];
+
+                    selectedTrack = this._findBestMatch(originalQuery, results, 'soundcloud');
+                    const formatted = this._formatSoundCloudTrack(selectedTrack || results[0]);
+                    return formatted ? [formatted] : [];
+                }
+                default:
+                    throw new Error(`Source "${source}" is not supported for text search.`);
             }
-            const sc = await scdl.search({ query, limit: 7, resourceType: 'tracks', client_id: this.soundcloudClientId });
-            const t = sc?.collection?.[0];
-            return t ? [{
-              url: t.permalink_url,
-              title: t.title,
-              artist: t.user?.username || 'Unknown Artist',
-              duration: convertMsToMinutesSeconds(t.duration),
-              source: 'soundcloud',
-              likes: t.likes_count,
-              thumbnail: t.artwork_url || t.user?.avatar_url
-            }] : [];
-          }
-          default:
-            throw new Error('Source not supported');
         }
     } catch (error) {
-         this.emit('error', { error: `Search failed for "${query}" on ${source}: ${error.message}`});
-         return [];
+        if (error.response) { console.error(`[Search Error] API Response Error (${error.response.status}):`, error.response.data); }
+        else if (error.body) { console.error(`[Search Error] Spotify API Error (${error.statusCode}):`, error.body); }
+        else { console.error(`[Search Error] General error during search for "${originalQuery}" on ${source}:`, error); }
+        this.emit('error', { error: `Search failed for "${originalQuery}" on ${source}: ${error.message || 'Unknown error'}` });
+        return [];
     }
+  }
+
+  _findBestMatch(query, results, sourceType) {
+      if (!results || results.length === 0) return null;
+
+      const queryLower = query.toLowerCase();
+      let bestMatch = null;
+      let highestScore = -1;
+
+      for (const track of results) {
+          let title = '';
+          let artist = '';
+
+          if (sourceType === 'spotify') {
+              title = track.name || '';
+              artist = track.artists?.[0]?.name || '';
+          } else if (sourceType === 'soundcloud') {
+              title = track.title || '';
+              artist = track.user?.username || '';
+          }
+
+          if (!title) continue;
+
+          const titleLower = title.toLowerCase();
+          const artistLower = artist.toLowerCase();
+          const combinedLower = `${titleLower} ${artistLower}`;
+
+          let score = 0;
+
+          if (titleLower === queryLower) {
+              score += 5;
+          } else if (titleLower.includes(queryLower)) {
+              score += 2;
+          } else if (queryLower.includes(titleLower)) {
+               score += 1;
+           }
+
+           if (combinedLower.includes(queryLower)) {
+                score += 1;
+           }
+
+          if (artistLower && queryLower.includes(artistLower)) {
+              score += 1;
+          }
+
+          if (score > highestScore) {
+              highestScore = score;
+              bestMatch = track;
+          }
+
+          if (titleLower === queryLower && queryLower.includes(artistLower)) {
+              return track;
+          }
+      }
+
+      this.emit('debug', `Best match logic selected track with score ${highestScore} for query "${query}"`);
+      return bestMatch;
   }
 
   async play({ query, voiceChannel, textChannel, member, source }) {
@@ -793,21 +919,6 @@ class YukufyClient extends EventEmitter {
       playerStatus: playerState?.status || 'Idle'
     };
   }
-
-  _formatSpotifyTrack(track) {
-    return {
-      id: uuidv4(),
-      title: track.name,
-      artist: track.artists?.[0]?.name || 'Unknown Artist',
-      artistId: track.artists?.[0]?.id,
-      duration: convertMsToMinutesSeconds(track.duration_ms),
-      url: track.external_urls?.spotify,
-      thumbnail: track.album?.images?.[0]?.url,
-      source: 'spotify'
-    };
-  }
-
-   /* _formatSoundCloudTrack(track) { ... } */
 
   leave(guildId) {
     const connection = getVoiceConnection(guildId);

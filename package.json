@@ -1,6 +1,6 @@
 {
   "name": "yukufy",
-  "version": "1.8.0",
+  "version": "1.8.5",
   "description": "A Player Package built with Node.js, using Spotify and SoundCloud as search and streaming engines, easy and simple to use for your bot.",
   "main": "main.js",
   "scripts": {

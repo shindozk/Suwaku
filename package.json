@@ -1,7 +1,7 @@
 {
   "name": "yukufy",
-  "version": "1.8.5",
-  "description": "A Player Package built with Node.js, using Spotify and SoundCloud as search and streaming engines, easy and simple to use for your bot.",
+  "version": "1.9.0",
+  "description": "A Player Package built with Node.js, using Spotify and SoundCloud as search and streaming engines, easy and simple to use for your bot. Includes ffmpeg-static for universal compatibility.",
   "main": "main.js",
   "scripts": {
     "start": "node main.js"
@@ -16,7 +16,8 @@
     "stream",
     "track",
     "player",
-    "yukufy"
+    "yukufy",
+    "ffmpeg-static"
   ],
   "author": "shindozk",
   "license": "ISC",
@@ -32,9 +33,9 @@
     "@discordjs/voice": "^0.17.0",
     "@types/node": "^18.0.6",
     "axios": "^1.7.7",
-    "discord.js": "^14.18.0",
     "events": "^3.3.0",
     "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.2",
     "genius-lyrics": "^4.4.7",
     "libsodium-wrappers": "^0.7.13",
     "opus-decoder": "^0.7.6",

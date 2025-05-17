@@ -1,7 +1,9 @@
-const {YukufyClient} = require("./src/utils/Player")
+const {YukufyClient} = require("./src/utils/Player");
+const ffmpegManager = require("./src/utils/FFmpegManager");
 
 module.exports = {
-    YukufyClient
+    YukufyClient,
+    FFmpegManager: ffmpegManager
 };
 
 require("./src/scripts/Update");

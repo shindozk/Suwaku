@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { Readable } = require('stream');
+const StreamEnhancer = require('./StreamEnhancer');
 
 const API_KEY = process.env.RAPIDAPI_KEY || '195d9d56f0mshf2ef5b15de50facp11ef65jsn7dbd159005d4';
 const API_HOST = 'youtube-mp4-mp3-downloader.p.rapidapi.com';
@@ -107,12 +108,13 @@ async function getAudioStream(youtubeUrl, options = {}) {
         throw new Error("Final download URL did not return a valid stream.");
     }
 
-     audioStreamResponse.data.on('error', (error) => {
+    audioStreamResponse.data.on('error', (error) => {
         //console.error(`[Stream] Error during final audio streaming for ${videoId}:`, error.message);
         return;
-     });
+    });
 
-    return audioStreamResponse.data;
+    const enhancedStream = StreamEnhancer.enhanceStream(audioStreamResponse.data);
+    return enhancedStream;
 
   } catch (error) {
     console.error(`[Stream] Error fetching final stream from downloadUrl (${downloadUrl}):`, error.response?.status, error.response?.statusText, error.message);

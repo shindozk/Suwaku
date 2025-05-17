@@ -45,6 +45,16 @@ Make sure you have **Node.js v16.9.0 or higher**.
 
 If you encounter issues, refer to the [discord.js documentation](https://discord.js.org/%23/docs/discord.js/main/general/welcome) for installation methods.
 
+## 🚀 Universal Compatibility
+
+This version of Yukufy includes `ffmpeg-static` and `fluent-ffmpeg`, ensuring your music bot works in **any hosting environment**, even without terminal access to manually install ffmpeg.
+
+- Works on Replit, Glitch, Heroku
+
+- Compatible with Pterodactyl panels
+
+- No manual ffmpeg installation required
+
 <hr style="border: 1px solid #e0e0e0; margin: 30px 0">
 
 ## ⚙️ Configuration

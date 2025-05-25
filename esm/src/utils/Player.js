@@ -1,4 +1,4 @@
-const {
+import {
   joinVoiceChannel,
   createAudioPlayer,
   createAudioResource,
@@ -6,17 +6,17 @@ const {
   VoiceConnectionStatus,
   getVoiceConnection,
   entersState
-} = require('@discordjs/voice');
-const SpotifyWebApi = require('spotify-web-api-node');
-const SoundCloud = require('soundcloud-scraper');
-const scdl = require('soundcloud-downloader').default;
-const ytSearch = require('yt-search');
-const sodium = require('libsodium-wrappers');
-const { EventEmitter } = require('events');
-const Genius = require('genius-lyrics');
-const { v4: uuidv4 } = require('uuid');
+} from '@discordjs/voice';
+import SpotifyWebApi from 'spotify-web-api-node';
+import SoundCloud from 'soundcloud-scraper';
+import scdl from 'soundcloud-downloader';
+import ytSearch from 'yt-search';
+import sodium from 'libsodium-wrappers';
+import { EventEmitter } from 'events';
+import Genius from 'genius-lyrics';
+import { v4 as uuidv4 } from 'uuid';
 
-const { getAudioStream } = require('./Stream');
+import getAudioStream from './Stream.js';
 
 (async () => { await sodium.ready; })();
 
@@ -1084,4 +1084,4 @@ class YukufyClient extends EventEmitter {
   }
 }
 
-module.exports = { YukufyClient };
+export default YukufyClient;

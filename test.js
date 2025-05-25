@@ -6,9 +6,9 @@ const {
     Collection,
     EmbedBuilder,
     SlashCommandBuilder,
-    Routes
+    Routes,
+    REST
   } = require('discord.js');
-  const { REST } = require('@discordjs/rest');
   
   // Make sure the path to Player.js is correct
   const { YukufyClient } = require('yukufy');

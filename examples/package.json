@@ -1,0 +1,27 @@
+{
+  "name": "suwaku-examples",
+  "version": "1.0.0",
+  "description": "Example bots using Suwaku music player",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node basic-bot.js",
+    "dev": "node --watch basic-bot.js"
+  },
+  "keywords": [
+    "discord",
+    "music",
+    "bot",
+    "example"
+  ],
+  "author": "shindozk",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.1",
+    "suwaku": "file:.."
+  },
+  "engines": {
+    "node": ">=16.9.0"
+  }
+}

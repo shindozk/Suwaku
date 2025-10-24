@@ -1,0 +1,86 @@
+{
+  "name": "suwaku",
+  "version": "1.0.0",
+  "description": "A powerful and flexible Lavalink-based music player for Discord bots. Built with Node.js, featuring multi-source support, advanced queue management, and comprehensive event system.",
+  "main": "src/index.js",
+  "types": "types/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./src/index.js",
+      "import": "./src/index.js",
+      "types": "./types/index.d.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "type": "module",
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src/**/*.js",
+    "lint:fix": "eslint src/**/*.js --fix",
+    "format": "prettier --write \"src/**/*.js\"",
+    "check-updates": "node scripts/verify-update.js",
+    "check-updates:force": "node scripts/verify-update.js --force",
+    "info": "node scripts/info.js",
+    "welcome": "node scripts/welcome.js",
+    "postinstall": "node scripts/welcome.js && node scripts/verify-update.js --silent || true"
+  },
+  "keywords": [
+    "discord",
+    "discord-bot",
+    "music",
+    "music-bot",
+    "lavalink",
+    "lavalink-client",
+    "audio",
+    "player",
+    "queue",
+    "youtube",
+    "spotify",
+    "soundcloud",
+    "streaming",
+    "discord.js",
+    "suwaku"
+  ],
+  "author": "shindozk",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shindozk/Suwaku.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shindozk/Suwaku/issues"
+  },
+  "homepage": "https://github.com/shindozk/Suwaku#readme",
+  "readme": "https://github.com/shindozk/Suwaku#readme",
+  "dependencies": {
+    "axios": "^1.7.7",
+    "events": "^3.3.0",
+    "uuid": "^10.0.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@babel/cli": "^7.23.9",
+    "@babel/core": "^7.23.9",
+    "@babel/preset-env": "^7.23.9",
+    "@types/node": "^20.11.16",
+    "eslint": "^8.56.0",
+    "husky": "^9.0.10",
+    "jest": "^29.7.0",
+    "prettier": "^3.2.5"
+  },
+  "peerDependencies": {
+    "discord.js": "^14.0.0"
+  },
+  "engines": {
+    "node": ">=16.9.0"
+  },
+  "files": [
+    "src/",
+    "types/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ]
+}

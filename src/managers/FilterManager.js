@@ -158,6 +158,36 @@ const FilterPresets = {
       { band: 12, gain: 0.25 },
       { band: 13, gain: 0.3 }
     ]
+  },
+  // --- NOVAS FUNÇÕES INOVADORAS (SUWAKU EXCLUSIVE) ---
+  ROBOT: {
+    tremolo: { frequency: 50.0, depth: 0.8 },
+    vibrato: { frequency: 50.0, depth: 0.8 },
+    distortion: { sinOffset: 0.5, sinScale: 1.0, cosOffset: 0.5, cosScale: 1.0, tanOffset: 0.5, tanScale: 1.0, offset: 0.5, scale: 1.0 }
+  },
+  CHIPMUNK: {
+    timescale: { speed: 1.0, pitch: 1.5, rate: 1.0 }
+  },
+  MONSTER: {
+    timescale: { speed: 1.0, pitch: 0.5, rate: 1.0 }
+  },
+  TELEPHONE: {
+    equalizer: [
+      { band: 0, gain: -1.0 }, { band: 1, gain: -1.0 }, { band: 2, gain: -1.0 },
+      { band: 3, gain: -1.0 }, { band: 4, gain: -1.0 }, { band: 5, gain: 0.5 },
+      { band: 6, gain: 0.5 }, { band: 7, gain: 0.5 }, { band: 8, gain: 0.5 },
+      { band: 9, gain: -1.0 }, { band: 10, gain: -1.0 }, { band: 11, gain: -1.0 },
+      { band: 12, gain: -1.0 }, { band: 13, gain: -1.0 }
+    ]
+  },
+  RADIO: {
+    equalizer: [
+      { band: 0, gain: -0.5 }, { band: 1, gain: -0.5 }, { band: 2, gain: -0.5 },
+      { band: 3, gain: 0.2 }, { band: 4, gain: 0.2 }, { band: 5, gain: 0.2 },
+      { band: 6, gain: 0.2 }, { band: 7, gain: 0.2 }, { band: 8, gain: -0.5 },
+      { band: 9, gain: -0.5 }, { band: 10, gain: -0.5 }
+    ],
+    distortion: { sinOffset: 0.2, sinScale: 0.5 }
   }
 };
 
@@ -203,7 +233,12 @@ class FilterManager {
       'pop': 'POP',
       'rock': 'ROCK',
       'electronic': 'ELECTRONIC',
-      'classical': 'CLASSICAL'
+      'classical': 'CLASSICAL',
+      'robot': 'ROBOT',
+      'chipmunk': 'CHIPMUNK',
+      'monster': 'MONSTER',
+      'telephone': 'TELEPHONE',
+      'radio': 'RADIO'
     };
     
     const presetKey = presetMap[presetLower];

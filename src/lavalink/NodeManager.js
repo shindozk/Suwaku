@@ -66,6 +66,10 @@ class NodeManager extends EventEmitter {
     node.on('disconnect', data => {
       this.emit('nodeDisconnect', node, data);
       this.emit('debug', `Node ${node.identifier} disconnected`);
+      
+      // AQUAlink Feature: Fail-safe / Auto-resume
+      // If a node disconnects, move its players to another healthy node
+      this._handleNodeFailure(node);
     });
 
     node.on('error', error => {
@@ -101,6 +105,32 @@ class NodeManager extends EventEmitter {
     }
 
     return node;
+  }
+
+  /**
+   * Handle node failure by migrating players to another node (AQUAlink Feature)
+   * @param {LavalinkNode} failedNode - The node that failed
+   * @private
+   */
+  async _handleNodeFailure(failedNode) {
+    const players = this.client.playerManager.getAll().filter(p => p.node.identifier === failedNode.identifier);
+    if (players.length === 0) return;
+
+    this.emit('debug', `Node ${failedNode.identifier} failed. Migrating ${players.length} players...`);
+
+    const bestNode = this.getBest();
+    if (!bestNode) {
+      this.emit('error', new Error(`Critical: Node ${failedNode.identifier} failed and no other nodes are available for migration!`));
+      return;
+    }
+
+    for (const player of players) {
+      try {
+        await player.moveNode(bestNode);
+      } catch (error) {
+        this.emit('error', new Error(`Failed to migrate player for guild ${player.guildId}: ${error.message}`));
+      }
+    }
   }
 
   /**
@@ -157,16 +187,66 @@ class NodeManager extends EventEmitter {
   }
 
   /**
-   * Get the least used node (for load balancing)
-   * @returns {LavalinkNode|null} The least used node or null
+   * Get the best node using Least Load balancing (AQUAlink Feature)
+   * @returns {LavalinkNode|null} The best node or null
    */
-  getLeastUsed() {
+  getBest() {
     const connected = this.getConnected();
     if (connected.length === 0) return null;
 
-    return connected.reduce((prev, curr) => 
-      curr.calls < prev.calls ? curr : prev
-    );
+    // Least Load Balancing algorithm
+    return connected.sort((a, b) => {
+      const loadA = this._calculateNodeLoad(a);
+      const loadB = this._calculateNodeLoad(b);
+      return loadA - loadB;
+    })[0];
+  }
+
+  /**
+   * Calculate node load score (lower is better)
+   * @param {LavalinkNode} node - The node to calculate load for
+   * @returns {number} Load score
+   * @private
+   */
+  _calculateNodeLoad(node) {
+    if (!node.stats) return node.calls;
+
+    const stats = node.stats;
+    
+    // Penalize high CPU load (0-1 range)
+    const cpuLoad = (stats.cpu?.systemLoad || 0) * 100;
+    
+    // Penalize high memory usage
+    const memUsed = stats.memory?.used || 0;
+    const memTotal = stats.memory?.reservable || 1;
+    const memUsage = (memUsed / memTotal) * 100;
+    
+    // Player count is a major factor
+    const playingPlayers = stats.playingPlayers || 0;
+    const totalPlayers = stats.players || 0;
+    
+    // Frame issues are serious
+    const framesDeficit = stats.frameStats?.deficit || 0;
+    const framesNulled = stats.frameStats?.nulled || 0;
+    
+    // Calculate score (weighted)
+    let score = (playingPlayers * 2) + (totalPlayers * 0.5);
+    score += cpuLoad * 1.5;
+    score += memUsage * 0.5;
+    score += (framesDeficit + framesNulled) * 10;
+    
+    // Also consider node-specific calls as a tie-breaker
+    score += (node.calls / 1000);
+    
+    return score;
+  }
+
+  /**
+   * Get the least used node (legacy, now uses getBest)
+   * @returns {LavalinkNode|null} The least used node or null
+   */
+  getLeastUsed() {
+    return this.getBest();
   }
 
   /**

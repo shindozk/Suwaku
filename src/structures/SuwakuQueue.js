@@ -65,6 +65,17 @@ class SuwakuQueue {
   }
 
   /**
+   * Clear the entire queue and history
+   * @returns {void}
+   */
+  destroy() {
+    this.tracks = [];
+    this.previous = [];
+    this.current = null;
+    this.player = null;
+  }
+
+  /**
    * Get total duration of all tracks in queue
    * @returns {number} Total duration in milliseconds
    */
@@ -281,23 +292,44 @@ class SuwakuQueue {
   }
 
   /**
-   * Remove duplicate tracks
+   * Remove duplicate tracks based on title and author
    * @returns {number} Number of duplicates removed
    */
   removeDuplicates() {
     const seen = new Set();
-    const original = this.tracks.length;
+    const originalSize = this.tracks.length;
     
     this.tracks = this.tracks.filter(track => {
-      const key = `${track.title}-${track.author}`;
-      if (seen.has(key)) {
-        return false;
-      }
+      const key = `${track.title.toLowerCase()}-${track.author.toLowerCase()}`.trim();
+      if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
 
-    return original - this.tracks.length;
+    const removed = originalSize - this.tracks.length;
+    if (removed > 0) {
+      this.player.emit("queueUpdate", this);
+    }
+    return removed;
+  }
+
+  /**
+   * Swap two tracks in the queue
+   * @param {number} pos1 - First position
+   * @param {number} pos2 - Second position
+   * @returns {boolean} Whether swap was successful
+   */
+  swap(pos1, pos2) {
+    validateNumber(pos1, 'Position 1');
+    validateNumber(pos2, 'Position 2');
+    validateRange(pos1, 'Position 1', 0, this.tracks.length - 1);
+    validateRange(pos2, 'Position 2', 0, this.tracks.length - 1);
+
+    if (pos1 === pos2) return true;
+
+    [this.tracks[pos1], this.tracks[pos2]] = [this.tracks[pos2], this.tracks[pos1]];
+    this.player.emit("queueUpdate", this);
+    return true;
   }
 
   /**

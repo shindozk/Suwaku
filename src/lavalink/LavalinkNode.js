@@ -378,19 +378,23 @@ class LavalinkNode extends EventEmitter {
    * @private
    */
   _attemptReconnect() {
-    if (this.reconnectAttempts >= this.options.retryAmount) {
+    const maxReconnects = this.options.retryAmount || Infinity;
+    
+    if (this.reconnectAttempts >= maxReconnects && maxReconnects !== Infinity) {
       this.emit('error', new ConnectionError(
-        `Failed to reconnect after ${this.options.retryAmount} attempts`,
+        `Failed to reconnect after ${this.reconnectAttempts} attempts`,
         { node: this.identifier }
       ));
       return;
     }
 
     this.reconnectAttempts++;
-    const delay = this.options.retryDelay * this.reconnectAttempts;
+    
+    // Exponential backoff with a cap of 30 seconds
+    const delay = Math.min(this.options.retryDelay * this.reconnectAttempts, 30000);
 
     this.emit('debug',
-      `[${this.identifier}] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.options.retryAmount})`
+      `[${this.identifier}] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}${maxReconnects === Infinity ? '' : '/' + maxReconnects})`
     );
 
     this.reconnectTimeout = setTimeout(() => {

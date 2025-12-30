@@ -3,11 +3,15 @@
  * @module structures/SuwakuPlayer
  */
 
-import { EventEmitter } from 'events';
-import { SuwakuQueue } from './SuwakuQueue.js';
-import { FilterManager } from '../managers/FilterManager.js';
-import { PlayerState, TrackEndReason } from '../utils/constants.js';
-import { validateNonEmptyString, validateNumber, validateRange } from '../utils/validators.js';
+import { EventEmitter } from "events";
+import { SuwakuQueue } from "./SuwakuQueue.js";
+import { FilterManager } from "../managers/FilterManager.js";
+import { PlayerState, TrackEndReason, DefaultPlayerOptions } from "../utils/constants.js";
+import {
+  validateNonEmptyString,
+  validateNumber,
+  validateRange,
+} from "../utils/validators.js";
 
 /**
  * Represents a music player for a guild
@@ -21,38 +25,48 @@ class SuwakuPlayer extends EventEmitter {
    * @param {string} options.voiceChannelId - Voice channel ID
    * @param {string} [options.textChannelId] - Text channel ID
    * @param {LavalinkNode} [options.node] - Lavalink node to use
+   * @param {string[]} [options.autoplayPlatform] - Platforms for autoplay
+   * @param {boolean} [options.autoResume] - Whether to auto-resume playback
+   * @param {number} [options.maxReconnects] - Maximum reconnect attempts
+   * @param {number} [options.reconnectInterval] - Reconnect interval in ms
    */
   constructor(client, options) {
     super();
 
-    validateNonEmptyString(options.guildId, 'Guild ID');
-    validateNonEmptyString(options.voiceChannelId, 'Voice channel ID');
+    validateNonEmptyString(options.guildId, "Guild ID");
+    validateNonEmptyString(options.voiceChannelId, "Voice channel ID");
 
     this.client = client;
+
+    /**
+     * Player options merged with defaults
+     * @type {Object}
+     */
+    this.options = { ...DefaultPlayerOptions, ...options };
 
     /**
      * Guild ID
      * @type {string}
      */
-    this.guildId = options.guildId;
+    this.guildId = this.options.guildId;
 
     /**
      * Voice channel ID
      * @type {string}
      */
-    this.voiceChannelId = options.voiceChannelId;
+    this.voiceChannelId = this.options.voiceChannelId;
 
     /**
      * Text channel ID
      * @type {string|null}
      */
-    this.textChannelId = options.textChannelId || null;
+    this.textChannelId = this.options.textChannelId || null;
 
     /**
      * Lavalink node
      * @type {LavalinkNode}
      */
-    this.node = options.node || this.client.nodes.getNodeForPlayer();
+    this.node = this.options.node || this.client.nodes.getNodeForPlayer();
 
     /**
      * Queue instance
@@ -111,17 +125,17 @@ class SuwakuPlayer extends EventEmitter {
     /**
      * Idle timeout
      * @type {NodeJS.Timeout|null}
+     * @private
      */
-    this.idleTimeout = null;
-
-    /**
-     * Player creation timestamp
-     * @type {number}
-     */
-    this.createdAt = Date.now();
+    this._idleTimeout = null;
 
     // Set up node event listeners
     this._setupNodeListeners();
+
+    // Start health monitoring if enabled
+    if (this.client.options.enableHealthMonitor !== false) {
+      this._startHealthMonitoring();
+    }
   }
 
   /**
@@ -141,11 +155,125 @@ class SuwakuPlayer extends EventEmitter {
   }
 
   /**
+   * Toggle dynamic rhythm mode (Suwaku Exclusive Innovation)
+   * This effect changes filters dynamically based on the track's playback state
+   * @param {boolean} [enable] - Whether to enable
+   * @returns {boolean} New state
+   */
+  toggleDynamicRhythm(enable) {
+    const newState = enable ?? !this._dynamicRhythmInterval;
+    
+    if (newState && !this._dynamicRhythmInterval) {
+      this.client.emit('debug', `Enabling Dynamic Rhythm for guild ${this.guildId}`);
+      
+      let step = 0;
+      this._dynamicRhythmInterval = setInterval(async () => {
+        if (!this.playing || this.paused) return;
+        
+        step = (step + 1) % 4;
+        
+        // Dynamic Bass Pulse
+        const pulseGains = [
+          { band: 0, gain: 0.6 },
+          { band: 1, gain: 0.3 },
+          { band: 0, gain: 0.1 },
+          { band: 1, gain: 0.3 }
+        ];
+        
+        try {
+          await this.filters.setEqualizer([pulseGains[step]]);
+        } catch (e) {
+          this.client.emit('debug', `Dynamic Rhythm error: ${e.message}`);
+        }
+      }, 500); // Pulse every 500ms
+    } else if (!newState && this._dynamicRhythmInterval) {
+      this.client.emit('debug', `Disabling Dynamic Rhythm for guild ${this.guildId}`);
+      clearInterval(this._dynamicRhythmInterval);
+      this._dynamicRhythmInterval = null;
+      this.filters.removeFilter('equalizer');
+    }
+    
+    return !!this._dynamicRhythmInterval;
+  }
+
+  /**
    * Set up node event listeners
    * @private
    */
   _setupNodeListeners() {
-    this.node.on('message', this._handleNodeMessage.bind(this));
+    this._nodeMessageListener = this._handleNodeMessage.bind(this);
+    this.node.on("message", this._nodeMessageListener);
+  }
+
+  /**
+   * Check idle state and manage timeout
+   * @private
+   */
+  _checkIdleState() {
+    if (this._idleTimeout) {
+      clearTimeout(this._idleTimeout);
+      this._idleTimeout = null;
+    }
+
+    if (!this.playing && this.client.options.idleTimeout > 0) {
+      this.client.emit("debug", `Player idle in guild ${this.guildId}. Starting ${this.client.options.idleTimeout}ms timeout.`);
+      this._idleTimeout = setTimeout(() => {
+        this.client.emit("debug", `Idle timeout reached for guild ${this.guildId}. Destroying player.`);
+        this.destroy();
+      }, this.client.options.idleTimeout);
+    }
+  }
+
+  /**
+   * Destroy the player
+   * @returns {Promise<void>}
+   */
+  async destroy() {
+    if (this.state === PlayerState.DESTROYED) return;
+
+    this.client.emit("debug", `Destroying player for guild ${this.guildId}`);
+
+    // Remove node listener to prevent memory leaks
+    if (this._nodeMessageListener) {
+      this.node.removeListener("message", this._nodeMessageListener);
+    }
+
+    // Clear dynamic rhythm interval if active
+    if (this._dynamicRhythmInterval) {
+      clearInterval(this._dynamicRhythmInterval);
+      this._dynamicRhythmInterval = null;
+    }
+
+    // Clear idle timeout
+    if (this._idleTimeout) {
+      clearTimeout(this._idleTimeout);
+      this._idleTimeout = null;
+    }
+
+    // Stop playback and destroy in Lavalink
+    try {
+      await this.node.rest.destroyPlayer(this.guildId);
+    } catch (error) {
+      this.client.emit("debug", `Error destroying player in Lavalink: ${error.message}`);
+    }
+
+    // Disconnect from voice
+    this.disconnect();
+
+    this.state = PlayerState.DESTROYED;
+    this.playing = false;
+    this.paused = false;
+
+    // Remove from manager
+    this.client.playerManager.delete(this.guildId);
+
+    // Destroy queue
+    if (this.queue) {
+      this.queue.destroy();
+    }
+
+    this.emit("destroy", this);
+    this.removeAllListeners();
   }
 
   /**
@@ -157,10 +285,10 @@ class SuwakuPlayer extends EventEmitter {
     if (message.guildId !== this.guildId) return;
 
     switch (message.op) {
-      case 'playerUpdate':
+      case "playerUpdate":
         this._handlePlayerUpdate(message);
         break;
-      case 'event':
+      case "event":
         this._handleEvent(message);
         break;
     }
@@ -187,26 +315,30 @@ class SuwakuPlayer extends EventEmitter {
   _handleEvent(event) {
     try {
       switch (event.type) {
-        case 'TrackStartEvent':
+        case "TrackStartEvent":
           this._handleTrackStart(event);
           break;
-        case 'TrackEndEvent':
+        case "TrackEndEvent":
           this._handleTrackEnd(event);
           break;
-        case 'TrackExceptionEvent':
+        case "TrackExceptionEvent":
           this._handleTrackException(event);
           break;
-        case 'TrackStuckEvent':
+        case "TrackStuckEvent":
           this._handleTrackStuck(event);
           break;
-        case 'WebSocketClosedEvent':
+        case "WebSocketClosedEvent":
           this._handleWebSocketClosed(event);
           break;
       }
     } catch (error) {
-      const errorMessage = error?.message || error?.toString() || 'Unknown event handling error';
-      this.client.emit('debug', `Error handling event ${event.type}: ${errorMessage}`);
-      this.emit('error', error || new Error('Unknown error in event handler'));
+      const errorMessage =
+        error?.message || error?.toString() || "Unknown event handling error";
+      this.client.emit(
+        "debug",
+        `Error handling event ${event.type}: ${errorMessage}`,
+      );
+      this.emit("error", error || new Error("Unknown error in event handler"));
     }
   }
 
@@ -219,19 +351,22 @@ class SuwakuPlayer extends EventEmitter {
     this.state = PlayerState.PLAYING;
     this.playing = true;
     this.paused = false;
-    this._clearIdleTimeout();
+    this._checkIdleState();
 
     // If current is null, we can't do much - just log a warning
     if (!this.current) {
-      this.client.emit('debug', 'Track started but no current track in queue');
+      this.client.emit("debug", "Track started but no current track in queue");
       this.state = PlayerState.IDLE;
       return;
     }
 
-    this.client.emit('debug', `Track started: ${this.current.title} in guild ${this.guildId}`);
+    this.client.emit(
+      "debug",
+      `Track started: ${this.current.title} in guild ${this.guildId}`,
+    );
 
     // Emit on player - PlayerManager will forward to client
-    this.emit('trackStart', this.current);
+    this.emit("trackStart", this.current);
   }
 
   /**
@@ -246,14 +381,20 @@ class SuwakuPlayer extends EventEmitter {
     this.state = PlayerState.ENDED;
     this.playing = false;
 
-    this.client.emit('debug', `Track ended: ${track?.title || 'Unknown'} - Reason: ${reason}`);
+    this.client.emit(
+      "debug",
+      `Track ended: ${track?.title || "Unknown"} - Reason: ${reason}`,
+    );
 
     if (track) {
-      this.emit('trackEnd', track, reason);
+      this.emit("trackEnd", track, reason);
     }
 
     // Auto-play next track if reason is finished
-    if (reason === TrackEndReason.FINISHED || reason === TrackEndReason.LOAD_FAILED) {
+    if (
+      reason === TrackEndReason.FINISHED ||
+      reason === TrackEndReason.LOAD_FAILED
+    ) {
       this._playNext();
     } else {
       this.state = PlayerState.IDLE;
@@ -266,19 +407,22 @@ class SuwakuPlayer extends EventEmitter {
    * @private
    */
   _handleTrackException(event) {
-    const error = new Error(event.exception?.message || 'Track exception');
+    const error = new Error(event.exception?.message || "Track exception");
     error.severity = event.exception?.severity;
     error.cause = event.exception?.cause;
 
     this.state = PlayerState.ERRORED;
     this.playing = false;
 
-    this.client.emit('debug', `Track exception: ${error.message} - Severity: ${error.severity}`);
+    this.client.emit(
+      "debug",
+      `Track exception: ${error.message} - Severity: ${error.severity}`,
+    );
 
     if (this.current) {
-      this.emit('trackError', this.current, error);
+      this.emit("trackError", this.current, error);
     } else {
-      this.emit('error', error);
+      this.emit("error", error);
     }
 
     // Try to play next track
@@ -286,7 +430,7 @@ class SuwakuPlayer extends EventEmitter {
   }
 
   /**
-   * Handle track stuck event
+   * Handle track stuck event with advanced retry system
    * @param {Object} event - Event data
    * @private
    */
@@ -294,35 +438,89 @@ class SuwakuPlayer extends EventEmitter {
     this.state = PlayerState.STUCK;
     this.playing = false;
 
-    this.client.emit('debug', `Track stuck: ${this.current?.title || 'Unknown'} - Threshold: ${event.thresholdMs}ms`);
+    this.client.emit(
+      "debug",
+      `Track stuck: ${this.current?.title || "Unknown"} - Threshold: ${event.thresholdMs}ms`,
+    );
 
     if (this.current) {
-      this.emit('trackStuck', this.current, event.thresholdMs);
+      this.emit("trackStuck", this.current, event.thresholdMs);
     }
 
     // Check if retry is enabled
     const retryEnabled = this.client.options.retryOnStuck ?? true;
+    const maxRetries = this.client.options.maxStuckRetries ?? 3;
 
-    // Try to resume the track first (retry mechanism)
-    if (retryEnabled && this.current && this.position > 0) {
-      this.client.emit('debug', `Attempting to resume stuck track at position ${this.position}ms`);
-      
+    // Initialize retry counter if not exists
+    if (!this._stuckRetryCount) {
+      this._stuckRetryCount = 0;
+    }
+
+    // Try to resume the track with multiple retry attempts
+    if (retryEnabled && this.current && this._stuckRetryCount < maxRetries) {
+      this._stuckRetryCount++;
+
+      this.client.emit(
+        "debug",
+        `Attempting to recover stuck track (attempt ${this._stuckRetryCount}/${maxRetries})`,
+      );
+
       try {
-        // Try to seek to current position to resume
-        await this.seek(this.position);
-        this.client.emit('debug', 'Successfully resumed stuck track');
-        
-        // Update state back to playing
+        // Strategy 1: Try to seek to current position
+        if (this.position > 0) {
+          await this.seek(this.position);
+          this.client.emit(
+            "debug",
+            "Successfully resumed stuck track via seek",
+          );
+
+          // Update state back to playing
+          this.state = PlayerState.PLAYING;
+          this.playing = true;
+
+          // Reset retry counter on success
+          this._stuckRetryCount = 0;
+          return;
+        }
+
+        // Strategy 2: Try to replay from start if position is 0
+        await this.replay();
+        this.client.emit(
+          "debug",
+          "Successfully resumed stuck track via replay",
+        );
+
         this.state = PlayerState.PLAYING;
         this.playing = true;
+        this._stuckRetryCount = 0;
         return;
       } catch (error) {
-        this.client.emit('debug', `Failed to resume stuck track: ${error.message}`);
+        this.client.emit(
+          "debug",
+          `Retry attempt ${this._stuckRetryCount} failed: ${error.message}`,
+        );
+
+        // If we haven't reached max retries, try again after a delay
+        if (this._stuckRetryCount < maxRetries) {
+          this.client.emit(
+            "debug",
+            `Waiting 2 seconds before next retry attempt...`,
+          );
+
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+
+          // Try one more time
+          return this._handleTrackStuck(event);
+        }
       }
     }
 
-    // If resume failed, disabled, or not possible, play next track
-    this.client.emit('debug', 'Skipping stuck track and playing next');
+    // If all retries failed or retry is disabled, play next track
+    this.client.emit(
+      "debug",
+      "All recovery attempts failed, skipping to next track",
+    );
+    this._stuckRetryCount = 0; // Reset counter
     this._playNext();
   }
 
@@ -333,7 +531,102 @@ class SuwakuPlayer extends EventEmitter {
    */
   _handleWebSocketClosed(event) {
     this.connected = false;
-    this.emit('voiceWebSocketClosed', event.code, event.reason);
+    this.emit("voiceWebSocketClosed", event.code, event.reason);
+  }
+
+  /**
+   * Autoplay related tracks (AQUAlink Feature)
+   * @param {SuwakuTrack} [track] - Base track for autoplay
+   * @returns {Promise<boolean>} Whether autoplay was successful
+   */
+  async autoplay(track) {
+    if (!this.options.autoplayPlatform || this.options.autoplayPlatform.length === 0) return false;
+
+    const baseTrack = track || this.queue.previous || this.queue.current;
+    if (!baseTrack) return false;
+
+    this.client.emit("debug", `Autoplay: Searching for tracks related to "${baseTrack.title}"`);
+
+    try {
+      // Use the configured autoplay platforms in order
+      for (const platform of this.options.autoplayPlatform) {
+        // Search for related tracks using the platform and base track info
+        const query = `${baseTrack.title} ${baseTrack.author}`;
+        const results = await this.client.search(query, {
+          source: platform,
+          limit: 5
+        });
+
+        if (results && results.tracks && results.tracks.length > 0) {
+          // Filter out current and previous tracks to avoid loops
+          const nextTrack = results.tracks.find(t => 
+            t.identifier !== baseTrack.identifier && 
+            !this.queue.history.some(h => h.identifier === t.identifier)
+          );
+
+          if (nextTrack) {
+            this.client.emit("debug", `Autoplay: Found match on ${platform}: "${nextTrack.title}"`);
+            this.queue.add(nextTrack);
+            return true;
+          }
+        }
+      }
+    } catch (error) {
+      this.client.emit("debug", `Autoplay Error: ${error.message}`);
+    }
+
+    return false;
+  }
+
+  /**
+   * Restart the current track (AQUAlink Feature)
+   * Useful for recovering from errors or node migrations
+   * @returns {Promise<boolean>} Whether restart was successful
+   */
+  async restart() {
+    if (!this.queue.current) return false;
+
+    this.client.emit("debug", `Restarting track: ${this.queue.current.title}`);
+    
+    // Save current position for accurate resume
+    const resumePosition = this.position;
+    
+    return this.play(this.queue.current, { 
+      startTime: resumePosition,
+      noReplace: false 
+    });
+  }
+
+  /**
+   * Move the player to a new Lavalink node (AQUAlink Feature)
+   * @param {LavalinkNode} node - The new node to move to
+   * @returns {Promise<boolean>} Whether move was successful
+   */
+  async moveNode(node) {
+    if (!node) throw new Error("No node provided for moveNode");
+    if (node.identifier === this.node.identifier) return false;
+
+    this.client.emit("debug", `Moving player from ${this.node.identifier} to ${node.identifier}`);
+
+    // Pause current node if playing
+    if (this.playing) {
+      try {
+        await this.node.rest.updatePlayer(this.guildId, { paused: true });
+      } catch (e) {
+        this.client.emit("debug", `Warning: Failed to pause player during migration: ${e.message}`);
+      }
+    }
+
+    // Update node reference
+    const oldNode = this.node;
+    this.node = node;
+
+    // Resume on new node if it was playing
+    if (this.playing) {
+      return this.restart();
+    }
+
+    return true;
   }
 
   /**
@@ -341,13 +634,25 @@ class SuwakuPlayer extends EventEmitter {
    * @private
    */
   async _playNext() {
-    const next = this.queue.shift();
+    let next = this.queue.shift();
 
     if (!next) {
-      this.state = PlayerState.IDLE;
-      this.emit('queueEnd', this);
-      this._startIdleTimeout();
-      return;
+      // If queue is empty, try autoplay if enabled
+      if (this.options.autoPlay) {
+        const success = await this.autoplay();
+        if (success) {
+          next = this.queue.shift();
+        }
+      }
+
+      if (!next) {
+        this.state = PlayerState.IDLE;
+        this.playing = false;
+        this.emit("queueEnd", this);
+
+        this._checkIdleState(); // Centralized idle check
+        return;
+      }
     }
 
     await this.play(next);
@@ -359,12 +664,18 @@ class SuwakuPlayer extends EventEmitter {
    */
   async connect() {
     if (this.connected) {
-      this.client.emit('debug', `Player already connected in guild ${this.guildId}`);
+      this.client.emit(
+        "debug",
+        `Player already connected in guild ${this.guildId}`,
+      );
       return;
     }
 
     this.state = PlayerState.CONNECTING;
-    this.client.emit('debug', `Connecting player in guild ${this.guildId} to channel ${this.voiceChannelId}`);
+    this.client.emit(
+      "debug",
+      `Connecting player in guild ${this.guildId} to channel ${this.voiceChannelId}`,
+    );
 
     // Send raw voice state update to Discord
     // This is the correct way for music bots with Lavalink
@@ -374,30 +685,52 @@ class SuwakuPlayer extends EventEmitter {
         guild_id: this.guildId,
         channel_id: this.voiceChannelId,
         self_mute: false,
-        self_deaf: false
-      }
+        self_deaf: false,
+      },
     });
 
-    this.emit('connecting', this);
+    this.emit("connecting", this);
   }
 
   /**
    * Disconnect from voice channel
    */
   disconnect() {
-    if (!this.connected) {
-      this.client.emit('debug', `Player already disconnected in guild ${this.guildId}`);
-      return;
+    this.client.emit("debug", `Disconnecting player in guild ${this.guildId}`);
+
+    try {
+      // Method 1: Try using Discord.js voice disconnect
+      const guild = this.client.discordClient.guilds.cache.get(this.guildId);
+      if (guild?.members?.me?.voice?.channel) {
+        guild.members.me.voice.disconnect();
+      }
+    } catch (error) {
+      this.client.emit(
+        "debug",
+        `Discord.js disconnect failed: ${error.message}`,
+      );
     }
 
-    this.client.emit('debug', `Disconnecting player in guild ${this.guildId}`);
-
-    // Send voice state update to Discord (null channel = disconnect)
-    this.client.discordClient.guilds.cache.get(this.guildId)?.members?.me?.voice?.disconnect();
+    try {
+      // Method 2: Send raw voice state update (null channel = disconnect)
+      this.client.discordClient.ws.shards.first()?.send({
+        op: 4,
+        d: {
+          guild_id: this.guildId,
+          channel_id: null,
+          self_mute: false,
+          self_deaf: false,
+        },
+      });
+    } catch (error) {
+      this.client.emit("debug", `Raw disconnect failed: ${error.message}`);
+    }
 
     this.connected = false;
     this.state = PlayerState.IDLE;
-    this.emit('disconnect', this);
+    this.playing = false;
+    this.paused = false;
+    this.emit("disconnect", this);
   }
 
   /**
@@ -415,17 +748,23 @@ class SuwakuPlayer extends EventEmitter {
     }
 
     if (!track) {
-      this.client.emit('debug', 'No track to play');
+      this.client.emit("debug", "No track to play");
       return false;
     }
 
     // Check player health
     const health = this.healthCheck();
     if (!health.healthy && this.state !== PlayerState.IDLE) {
-      this.client.emit('debug', `Player health check failed: ${health.issues.join(', ')}`);
+      this.client.emit(
+        "debug",
+        `Player health check failed: ${health.issues.join(", ")}`,
+      );
     }
 
-    this.client.emit('debug', `Playing track: ${track.title} in guild ${this.guildId}`);
+    this.client.emit(
+      "debug",
+      `Playing track: ${track.title} in guild ${this.guildId}`,
+    );
 
     // Ensure we're connected
     if (!this.connected) {
@@ -433,14 +772,14 @@ class SuwakuPlayer extends EventEmitter {
 
       // Wait for voice connection to establish
       // We need to wait for the voiceUpdate to be processed by Lavalink
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
     // Get voice state info
     const voiceState = this.client.voiceStates.get(this.guildId);
 
     if (!voiceState || !voiceState.sessionId || !voiceState.event) {
-      this.client.emit('debug', 'Voice state not ready');
+      this.client.emit("debug", "Voice state not ready");
       this.state = PlayerState.ERRORED;
       return false;
     }
@@ -452,20 +791,24 @@ class SuwakuPlayer extends EventEmitter {
         voice: {
           token: voiceState.event.token,
           endpoint: voiceState.event.endpoint,
-          sessionId: voiceState.sessionId
+          sessionId: voiceState.sessionId,
         },
         track: {
-          encoded: track.encoded
+          encoded: track.encoded,
         },
         position: options.startTime || 0,
-        volume: this.volume
+        volume: this.volume,
       };
 
       if (options.endTime) {
         updateData.endTime = options.endTime;
       }
 
-      await this.node.rest.updatePlayer(this.guildId, updateData, options.noReplace);
+      await this.node.rest.updatePlayer(
+        this.guildId,
+        updateData,
+        options.noReplace,
+      );
 
       this.queue.current = track;
       this.state = PlayerState.CONNECTED;
@@ -475,14 +818,18 @@ class SuwakuPlayer extends EventEmitter {
       this.lastPositionUpdate = Date.now();
       this.connected = true; // Mark as connected after successful play
 
-      this.client.emit('debug', `Successfully started playing: ${track.title}`);
+      this.client.emit("debug", `Successfully started playing: ${track.title}`);
 
       return true;
     } catch (error) {
-      const errorMessage = error?.message || error?.toString() || 'Unknown play error';
-      this.client.emit('debug', `Error playing track: ${errorMessage}`);
+      const errorMessage =
+        error?.message || error?.toString() || "Unknown play error";
+      this.client.emit("debug", `Error playing track: ${errorMessage}`);
       this.state = PlayerState.ERRORED;
-      this.emit('error', error || new Error('Unknown error while playing track'));
+      this.emit(
+        "error",
+        error || new Error("Unknown error while playing track"),
+      );
       return false;
     }
   }
@@ -497,10 +844,10 @@ class SuwakuPlayer extends EventEmitter {
     try {
       await this.node.rest.updatePlayer(this.guildId, { paused: true });
       this.paused = true;
-      this.emit('pause', this);
+      this.emit("pause", this);
       return true;
     } catch (error) {
-      this.emit('error', error);
+      this.emit("error", error);
       return false;
     }
   }
@@ -515,10 +862,10 @@ class SuwakuPlayer extends EventEmitter {
     try {
       await this.node.rest.updatePlayer(this.guildId, { paused: false });
       this.paused = false;
-      this.emit('resume', this);
+      this.emit("resume", this);
       return true;
     } catch (error) {
-      this.emit('error', error);
+      this.emit("error", error);
       return false;
     }
   }
@@ -529,15 +876,17 @@ class SuwakuPlayer extends EventEmitter {
    */
   async stop() {
     try {
-      await this.node.rest.updatePlayer(this.guildId, { track: { encoded: null } });
+      await this.node.rest.updatePlayer(this.guildId, {
+        track: { encoded: null },
+      });
       this.state = PlayerState.IDLE;
       this.queue.current = null;
       this.position = 0;
-      this.emit('stop', this);
-      this._startIdleTimeout();
+      this.emit("stop", this);
+      this._checkIdleState();
       return true;
     } catch (error) {
-      this.emit('error', error);
+      this.emit("error", error);
       return false;
     }
   }
@@ -548,8 +897,8 @@ class SuwakuPlayer extends EventEmitter {
    * @returns {Promise<boolean>} Whether skip was successful
    */
   async skip(amount = 1) {
-    validateNumber(amount, 'Skip amount');
-    validateRange(amount, 'Skip amount', 1, this.queue.size + 1);
+    validateNumber(amount, "Skip amount");
+    validateRange(amount, "Skip amount", 1, this.queue.size + 1);
 
     // Skip multiple tracks if needed
     for (let i = 1; i < amount; i++) {
@@ -569,22 +918,22 @@ class SuwakuPlayer extends EventEmitter {
    * @returns {Promise<boolean>} Whether seek was successful
    */
   async seek(position) {
-    validateNumber(position, 'Position');
+    validateNumber(position, "Position");
 
     if (!this.current || !this.current.isSeekable) {
       return false;
     }
 
-    validateRange(position, 'Position', 0, this.current.duration);
+    validateRange(position, "Position", 0, this.current.duration);
 
     try {
       await this.node.rest.updatePlayer(this.guildId, { position });
       this.position = position;
       this.lastPositionUpdate = Date.now();
-      this.emit('seek', position);
+      this.emit("seek", position);
       return true;
     } catch (error) {
-      this.emit('error', error);
+      this.emit("error", error);
       return false;
     }
   }
@@ -595,16 +944,16 @@ class SuwakuPlayer extends EventEmitter {
    * @returns {Promise<boolean>} Whether volume change was successful
    */
   async setVolume(volume) {
-    validateNumber(volume, 'Volume');
-    validateRange(volume, 'Volume', 0, 1000);
+    validateNumber(volume, "Volume");
+    validateRange(volume, "Volume", 0, 1000);
 
     try {
       await this.node.rest.updatePlayer(this.guildId, { volume });
       this.volume = volume;
-      this.emit('volumeChange', volume);
+      this.emit("volumeChange", volume);
       return true;
     } catch (error) {
-      this.emit('error', error);
+      this.emit("error", error);
       return false;
     }
   }
@@ -615,7 +964,7 @@ class SuwakuPlayer extends EventEmitter {
    */
   setLoop(mode) {
     this.queue.setLoop(mode);
-    this.emit('loopChange', mode);
+    this.emit("loopChange", mode);
   }
 
   /**
@@ -633,8 +982,11 @@ class SuwakuPlayer extends EventEmitter {
    * @returns {Promise<boolean>} Whether seek was successful
    */
   async seekForward(amount = 10000) {
-    validateNumber(amount, 'Seek amount');
-    const newPosition = Math.min(this.position + amount, this.current?.duration || 0);
+    validateNumber(amount, "Seek amount");
+    const newPosition = Math.min(
+      this.position + amount,
+      this.current?.duration || 0,
+    );
     return await this.seek(newPosition);
   }
 
@@ -644,7 +996,7 @@ class SuwakuPlayer extends EventEmitter {
    * @returns {Promise<boolean>} Whether seek was successful
    */
   async seekBackward(amount = 10000) {
-    validateNumber(amount, 'Seek amount');
+    validateNumber(amount, "Seek amount");
     const newPosition = Math.max(this.position - amount, 0);
     return await this.seek(newPosition);
   }
@@ -665,33 +1017,33 @@ class SuwakuPlayer extends EventEmitter {
    */
   shuffleQueue() {
     const shuffled = this.queue.shuffle();
-    this.emit('queueShuffle', this);
+    this.emit("queueShuffle", this);
     return shuffled;
   }
 
   /**
-   * Remove duplicate tracks from queue
+   * Remove duplicate tracks from the queue
    * @returns {number} Number of duplicates removed
    */
   removeDuplicates() {
-    const seen = new Set();
-    const original = this.queue.size;
-
-    this.queue.tracks = this.queue.tracks.filter(track => {
-      const key = `${track.title}-${track.author}`;
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
-
-    const removed = original - this.queue.size;
-    if (removed > 0) {
-      this.emit('queueUpdate', this);
+    const removedCount = this.queue.removeDuplicates();
+    if (removedCount > 0) {
+      this.emit("queueUpdate", this);
     }
+    return removedCount;
+  }
 
-    return removed;
+  /**
+   * Remove tracks added by a specific user
+   * @param {string} userId - The ID of the user
+   * @returns {number} Number of tracks removed
+   */
+  removeByRequester(userId) {
+    const removedCount = this.queue.removeByRequester(userId);
+    if (removedCount > 0) {
+      this.emit("queueUpdate", this);
+    }
+    return removedCount;
   }
 
   /**
@@ -711,7 +1063,7 @@ class SuwakuPlayer extends EventEmitter {
    */
   clearHistory() {
     this.queue.previous = [];
-    this.emit('historyCleared', this);
+    this.emit("historyCleared", this);
   }
 
   /**
@@ -724,7 +1076,10 @@ class SuwakuPlayer extends EventEmitter {
     }
 
     const timeSinceUpdate = Date.now() - this.lastPositionUpdate;
-    return Math.min(this.position + timeSinceUpdate, this.current?.duration || 0);
+    return Math.min(
+      this.position + timeSinceUpdate,
+      this.current?.duration || 0,
+    );
   }
 
   /**
@@ -767,7 +1122,7 @@ class SuwakuPlayer extends EventEmitter {
       loop: this.loop,
       hasFilters: Object.keys(this.filters.filters).length > 0,
       activeFilters: Object.keys(this.filters.filters),
-      uptime: Date.now() - this.createdAt
+      uptime: Date.now() - this.createdAt,
     };
   }
 
@@ -777,7 +1132,7 @@ class SuwakuPlayer extends EventEmitter {
    */
   setAutoplay(enabled) {
     this.autoplay = !!enabled;
-    this.emit('autoplayChange', this.autoplay);
+    this.emit("autoplayChange", this.autoplay);
   }
 
   /**
@@ -786,8 +1141,8 @@ class SuwakuPlayer extends EventEmitter {
    * @returns {Promise<boolean>} Whether jump was successful
    */
   async jumpTo(position) {
-    validateNumber(position, 'Position');
-    validateRange(position, 'Position', 0, this.queue.size - 1);
+    validateNumber(position, "Position");
+    validateRange(position, "Position", 0, this.queue.size - 1);
 
     // Remove all tracks before the target position
     for (let i = 0; i < position; i++) {
@@ -806,7 +1161,7 @@ class SuwakuPlayer extends EventEmitter {
    */
   moveTrack(from, to) {
     const result = this.queue.move(from, to);
-    this.emit('queueUpdate', this);
+    this.emit("queueUpdate", this);
     return result;
   }
 
@@ -817,7 +1172,7 @@ class SuwakuPlayer extends EventEmitter {
    */
   removeTrack(position) {
     const removed = this.queue.remove(position);
-    this.emit('trackRemove', removed, position);
+    this.emit("trackRemove", removed, position);
     return removed;
   }
 
@@ -827,7 +1182,7 @@ class SuwakuPlayer extends EventEmitter {
    */
   clearQueue() {
     const cleared = this.queue.clear();
-    this.emit('queueClear', this);
+    this.emit("queueClear", this);
     return cleared;
   }
 
@@ -838,7 +1193,7 @@ class SuwakuPlayer extends EventEmitter {
    */
   addTrack(track) {
     const size = this.queue.add(track);
-    this.emit('trackAdd', track);
+    this.emit("trackAdd", track);
     return size;
   }
 
@@ -857,20 +1212,23 @@ class SuwakuPlayer extends EventEmitter {
     const size = this.queue.addMultiple(tracks);
     const addTime = Date.now() - startTime;
 
-    this.client.emit('debug', `Added ${tracks.length} tracks to queue in ${addTime}ms`);
+    this.client.emit(
+      "debug",
+      `Added ${tracks.length} tracks to queue in ${addTime}ms`,
+    );
 
     // If playlist info is provided, emit trackAddPlaylist event
     if (playlistInfo) {
-      this.emit('trackAddPlaylist', {
-        name: playlistInfo.name || 'Unknown Playlist',
+      this.emit("trackAddPlaylist", {
+        name: playlistInfo.name || "Unknown Playlist",
         tracks: tracks,
         trackCount: tracks.length,
         requester: tracks[0]?.requester || null,
-        playlistInfo: playlistInfo
+        playlistInfo: playlistInfo,
       });
     } else {
       // Otherwise emit tracksAdd event for bulk add
-      this.emit('tracksAdd', tracks);
+      this.emit("tracksAdd", tracks);
     }
 
     return size;
@@ -893,7 +1251,10 @@ class SuwakuPlayer extends EventEmitter {
     const playlistInfo = options.playlistInfo || null;
     const totalTracks = tracks.length;
 
-    this.client.emit('debug', `Adding ${totalTracks} tracks in batches of ${batchSize}...`);
+    this.client.emit(
+      "debug",
+      `Adding ${totalTracks} tracks in batches of ${batchSize}...`,
+    );
 
     const startTime = Date.now();
     let addedCount = 0;
@@ -906,33 +1267,36 @@ class SuwakuPlayer extends EventEmitter {
 
       // Emit progress for large playlists
       if (totalTracks > 100 && i + batchSize < tracks.length) {
-        this.emit('playlistProgress', {
+        this.emit("playlistProgress", {
           added: addedCount,
           total: totalTracks,
-          percentage: Math.round((addedCount / totalTracks) * 100)
+          percentage: Math.round((addedCount / totalTracks) * 100),
         });
       }
 
       // Allow event loop to process other tasks
       if (i + batchSize < tracks.length) {
-        await new Promise(resolve => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
       }
     }
 
     const totalTime = Date.now() - startTime;
-    this.client.emit('debug', `Added ${totalTracks} tracks in ${totalTime}ms (${Math.round(totalTracks / (totalTime / 1000))} tracks/sec)`);
+    this.client.emit(
+      "debug",
+      `Added ${totalTracks} tracks in ${totalTime}ms (${Math.round(totalTracks / (totalTime / 1000))} tracks/sec)`,
+    );
 
     // Emit final event
     if (playlistInfo) {
-      this.emit('trackAddPlaylist', {
-        name: playlistInfo.name || 'Unknown Playlist',
+      this.emit("trackAddPlaylist", {
+        name: playlistInfo.name || "Unknown Playlist",
         tracks: tracks,
         trackCount: tracks.length,
         requester: tracks[0]?.requester || null,
-        playlistInfo: playlistInfo
+        playlistInfo: playlistInfo,
       });
     } else {
-      this.emit('tracksAdd', tracks);
+      this.emit("tracksAdd", tracks);
     }
 
     return this.queue.size;
@@ -943,7 +1307,7 @@ class SuwakuPlayer extends EventEmitter {
    * @param {string} channelId - Voice channel ID
    */
   setVoiceChannel(channelId) {
-    validateNonEmptyString(channelId, 'Channel ID');
+    validateNonEmptyString(channelId, "Channel ID");
     this.voiceChannelId = channelId;
   }
 
@@ -952,35 +1316,254 @@ class SuwakuPlayer extends EventEmitter {
    * @param {string} channelId - Text channel ID
    */
   setTextChannel(channelId) {
-    validateNonEmptyString(channelId, 'Channel ID');
+    validateNonEmptyString(channelId, "Channel ID");
     this.textChannelId = channelId;
   }
 
   /**
-   * Start idle timeout
-   * @private
+   * Handles voice state updates to trigger idle checks.
+   * Called by SuwakuClient.
    */
-  _startIdleTimeout() {
-    this._clearIdleTimeout();
-
-    const timeout = this.client.options.idleTimeout;
-    if (!timeout || timeout <= 0) return;
-
-    this.idleTimeout = setTimeout(() => {
-      if (this.state === PlayerState.IDLE && this.queue.isEmpty) {
-        this.destroy();
-      }
-    }, timeout);
+  handleVoiceStateUpdate() {
+    this._checkIdleState();
   }
 
   /**
-   * Clear idle timeout
+   * Centralized method to check if the player should leave due to inactivity.
    * @private
    */
-  _clearIdleTimeout() {
-    if (this.idleTimeout) {
-      clearTimeout(this.idleTimeout);
-      this.idleTimeout = null;
+  _checkIdleState() {
+    // Clear any existing timer
+    if (this._idleTimeout) {
+      clearTimeout(this._idleTimeout);
+      this._idleTimeout = null;
+    }
+
+    // If we are playing or paused, we are not idle
+    if (this.playing || this.paused) {
+      return;
+    }
+
+    const {
+      leaveOnEnd,
+      autoLeave,
+      autoLeaveDelay,
+      leaveOnEmpty,
+      leaveOnEmptyDelay,
+      idleTimeout,
+    } = this.client.options;
+
+    // --- Condition 1: `leaveOnEnd` is true and queue is empty ---
+    if (leaveOnEnd && this.queue.isEmpty) {
+      this.client.emit(
+        "debug",
+        `Queue ended, leaving immediately (leaveOnEnd) in guild ${this.guildId}`,
+      );
+      this.client.leave(this.guildId, true); // Don't await, let it run
+      return;
+    }
+
+    const voiceChannel = this.client.discordClient.channels.cache.get(
+      this.voiceChannelId,
+    );
+    const humanMembers =
+      voiceChannel?.members?.filter((m) => !m.user.bot).size ?? 0;
+
+    // --- Condition 2: `leaveOnEmpty` is true and channel is empty ---
+    if (leaveOnEmpty && humanMembers === 0) {
+      const delay = leaveOnEmptyDelay ?? 60000;
+      this.client.emit(
+        "debug",
+        `Channel empty, starting ${delay}ms leave timer (leaveOnEmpty) in guild ${this.guildId}`,
+      );
+      this._idleTimeout = setTimeout(() => {
+        // Re-check conditions before leaving
+        const currentHumans =
+          this.client.discordClient.channels.cache
+            .get(this.voiceChannelId)
+            ?.members?.filter((m) => !m.user.bot).size ?? 0;
+        if (currentHumans === 0 && !this.playing) {
+          this.client.emit(
+            "debug",
+            `Leaving empty channel for guild ${this.guildId}`,
+          );
+          this.client.leave(this.guildId, true);
+        }
+      }, delay);
+      return;
+    }
+
+    // --- Condition 3: `autoLeave` is true and queue is empty ---
+    if (autoLeave && this.queue.isEmpty) {
+      const delay = autoLeaveDelay ?? 30000;
+      this.client.emit(
+        "debug",
+        `Queue empty, starting ${delay}ms leave timer (autoLeave) in guild ${this.guildId}`,
+      );
+      this._idleTimeout = setTimeout(() => {
+        // Re-check conditions before leaving
+        if (this.queue.isEmpty && !this.playing) {
+          this.client.emit(
+            "debug",
+            `Auto-leaving guild ${this.guildId} after queue end`,
+          );
+          this.client.leave(this.guildId, true);
+        }
+      }, delay);
+      return;
+    }
+
+    // --- Condition 4: General idle timeout (from original implementation) ---
+    if (idleTimeout && idleTimeout > 0 && this.queue.isEmpty) {
+      this.client.emit(
+        "debug",
+        `Queue empty, starting ${idleTimeout}ms idle timer in guild ${this.guildId}`,
+      );
+      this._idleTimeout = setTimeout(() => {
+        if (this.state === PlayerState.IDLE && this.queue.isEmpty) {
+          this.client.emit(
+            "debug",
+            `Destroying player due to idle timeout for guild ${this.guildId}`,
+          );
+          this.destroy();
+        }
+      }, idleTimeout);
+    }
+  }
+
+  /**
+   * Start health monitoring
+   * @private
+   */
+  _startHealthMonitoring() {
+    const interval = this.client.options.healthCheckInterval || 15000; // 15 seconds default
+
+    this._healthMonitor = setInterval(() => {
+      this._performHealthCheck();
+    }, interval);
+
+    this.client.emit(
+      "debug",
+      `Health monitoring started for player ${this.guildId} (interval: ${interval}ms)`,
+    );
+  }
+
+  /**
+   * Stop health monitoring
+   * @private
+   */
+  _stopHealthMonitoring() {
+    if (this._healthMonitor) {
+      clearInterval(this._healthMonitor);
+      this._healthMonitor = null;
+      this.client.emit(
+        "debug",
+        `Health monitoring stopped for player ${this.guildId}`,
+      );
+    }
+  }
+
+  /**
+   * Perform health check and auto-correct issues
+   * @private
+   */
+  async _performHealthCheck() {
+    // Skip if not playing
+    if (!this.playing || this.paused || !this.current) {
+      return;
+    }
+
+    const now = Date.now();
+    const currentPosition = this.getCurrentPosition();
+    const timeSinceLastCheck = now - this._lastPositionCheck;
+
+    // Check if position is progressing
+    if (timeSinceLastCheck > 5000) {
+      // Check every 5 seconds
+      const positionDiff = currentPosition - this._lastKnownPosition;
+      const expectedDiff = timeSinceLastCheck * 0.9; // Allow 10% tolerance
+
+      // If position hasn't progressed as expected, audio might be stuck
+      if (positionDiff < expectedDiff && this.playing && !this.paused) {
+        this.client.emit(
+          "debug",
+          `Audio playback appears stuck (position: ${currentPosition}ms, expected progress: ${expectedDiff}ms, actual: ${positionDiff}ms)`,
+        );
+
+        // Try to auto-correct
+        await this._autoCorrectPlayback();
+      }
+
+      // Update last known values
+      this._lastPositionCheck = now;
+      this._lastKnownPosition = currentPosition;
+    }
+
+    // Check node health
+    if (this.node && !this.node.connected) {
+      this.client.emit(
+        "debug",
+        `Node disconnected for player ${this.guildId}, attempting to reconnect...`,
+      );
+
+      // Try to get a new node
+      const newNode = this.client.nodes.getLeastUsed();
+      if (newNode && newNode.connected) {
+        this.node = newNode;
+        this.client.emit(
+          "debug",
+          `Switched to new node: ${newNode.identifier}`,
+        );
+
+        // Try to resume playback
+        if (this.current) {
+          await this._autoCorrectPlayback();
+        }
+      }
+    }
+  }
+
+  /**
+   * Auto-correct playback issues
+   * @private
+   */
+  async _autoCorrectPlayback() {
+    if (!this.current) return;
+
+    this.client.emit(
+      "debug",
+      `Auto-correcting playback for: ${this.current.title}`,
+    );
+
+    try {
+      // Strategy 1: Try to seek to current position + 1 second
+      const targetPosition = Math.min(
+        this.position + 1000,
+        this.current.duration,
+      );
+      await this.seek(targetPosition);
+
+      this.client.emit("debug", "Playback auto-corrected via seek");
+
+      // Emit warning event
+      this.client.emit(
+        "warn",
+        `Auto-corrected playback for ${this.current.title} in guild ${this.guildId}`,
+      );
+    } catch (error) {
+      this.client.emit("debug", `Auto-correction failed: ${error.message}`);
+
+      // Strategy 2: Try to replay the track
+      try {
+        await this.play(this.current, { startTime: this.position });
+        this.client.emit("debug", "Playback auto-corrected via replay");
+      } catch (replayError) {
+        this.client.emit(
+          "debug",
+          `Replay failed: ${replayError.message}, skipping to next track`,
+        );
+        await this.skip();
+      }
     }
   }
 
@@ -992,19 +1575,30 @@ class SuwakuPlayer extends EventEmitter {
     const issues = [];
 
     if (!this.connected) {
-      issues.push('Player not connected to voice channel');
+      issues.push("Player not connected to voice channel");
     }
 
     if (!this.node || !this.node.connected) {
-      issues.push('Lavalink node not connected');
+      issues.push("Lavalink node not connected");
     }
 
     if (this.state === PlayerState.DESTROYED) {
-      issues.push('Player is destroyed');
+      issues.push("Player is destroyed");
     }
 
     if (this.state === PlayerState.ERRORED) {
-      issues.push('Player is in error state');
+      issues.push("Player is in error state");
+    }
+
+    // Check if audio is progressing
+    if (this.playing && !this.paused && this.current) {
+      const now = Date.now();
+      const timeSinceUpdate = now - this.lastPositionUpdate;
+
+      if (timeSinceUpdate > 10000) {
+        // No update in 10 seconds
+        issues.push("Audio playback may be stuck (no position updates)");
+      }
     }
 
     return {
@@ -1012,7 +1606,9 @@ class SuwakuPlayer extends EventEmitter {
       issues,
       state: this.state,
       connected: this.connected,
-      nodeConnected: this.node?.connected || false
+      nodeConnected: this.node?.connected || false,
+      lastPositionUpdate: this.lastPositionUpdate,
+      timeSinceUpdate: Date.now() - this.lastPositionUpdate,
     };
   }
 
@@ -1022,18 +1618,27 @@ class SuwakuPlayer extends EventEmitter {
    */
   async destroy() {
     if (this.state === PlayerState.DESTROYED) {
-      this.client.emit('debug', `Player already destroyed in guild ${this.guildId}`);
+      this.client.emit(
+        "debug",
+        `Player already destroyed in guild ${this.guildId}`,
+      );
       return;
     }
 
-    this.client.emit('debug', `Destroying player in guild ${this.guildId}`);
+    this.client.emit("debug", `Destroying player in guild ${this.guildId}`);
 
-    this._clearIdleTimeout();
+    this._stopHealthMonitoring();
+
+    // Clear idle timeout
+    if (this._idleTimeout) {
+      clearTimeout(this._idleTimeout);
+      this._idleTimeout = null;
+    }
 
     try {
       await this.node.rest.destroyPlayer(this.guildId);
     } catch (error) {
-      this.client.emit('debug', `Error destroying player: ${error.message}`);
+      this.client.emit("debug", `Error destroying player: ${error.message}`);
       // Ignore errors during destruction
     }
 
@@ -1043,7 +1648,7 @@ class SuwakuPlayer extends EventEmitter {
     this.paused = false;
     this.state = PlayerState.DESTROYED;
 
-    this.emit('destroy', this);
+    this.emit("destroy", this);
     this.removeAllListeners();
 
     // Remove from client's player map
@@ -1069,7 +1674,7 @@ class SuwakuPlayer extends EventEmitter {
       current: this.current?.toJSON() || null,
       queue: this.queue.toJSON(),
       node: this.node.identifier,
-      createdAt: this.createdAt
+      createdAt: this.createdAt,
     };
   }
 }

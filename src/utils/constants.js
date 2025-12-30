@@ -98,7 +98,20 @@ export const ErrorCode = {
   INVALID_CONFIGURATION: 'INVALID_CONFIGURATION',
   VOICE_CONNECTION_FAILED: 'VOICE_CONNECTION_FAILED',
   PERMISSION_DENIED: 'PERMISSION_DENIED',
+  AUTOPLAY_NOT_FOUND: 'AUTOPLAY_NOT_FOUND',
   INVALID_INPUT: 'INVALID_INPUT'
+};
+
+/**
+ * Default options for Suwaku Player
+ * @type {Object}
+ */
+export const DefaultPlayerOptions = {
+  autoplayPlatform: ['spsearch', 'ytsearch'],
+  autoResume: true,
+  maxReconnects: Infinity,
+  reconnectInterval: 5000,
+  volume: 100
 };
 
 /**
@@ -106,7 +119,8 @@ export const ErrorCode = {
  */
 export const Defaults = {
   VOLUME: 80,
-  SEARCH_SOURCE: 'youtube',
+  SEARCH_SOURCE: 'spotify',
+  PLAYBACK_ENGINE: 'youtubemusic',
   AUTO_LEAVE_DELAY: 300000, // 5 minutes
   HISTORY_SIZE: 50,
   RECONNECT_DELAY: 5000,

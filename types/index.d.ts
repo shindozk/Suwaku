@@ -55,6 +55,7 @@ export class SuwakuClient extends EventEmitter {
     public init(): Promise<void>;
     public play(options: PlayOptions): Promise<SuwakuTrack>;
     public search(query: string, options?: SearchOptions): Promise<SuwakuTrack[]>;
+    public searchByMood(mood: string, options?: SearchOptions): Promise<SuwakuTrack[]>;
     public getPlayer(guildId: string): SuwakuPlayer | undefined;
     public createPlayer(options: PlayerOptions): SuwakuPlayer;
     public destroyPlayer(guildId: string): Promise<boolean>;

@@ -14,7 +14,7 @@ if (!process.env.DISCORD_BOT_TOKEN) {
 }
 
 import { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, REST, Routes } from 'discord.js';
-import { SuwakuClient } from '../src/index.js';
+import { SuwakuClient } from '../src/main.js';
 
 // Create Discord client
 const client = new Client({
@@ -33,11 +33,11 @@ const suwaku = new SuwakuClient(client, {
       host: process.env.LAVALINK_HOST || 'localhost',
       port: parseInt(process.env.LAVALINK_PORT) || 2333,
       password: process.env.LAVALINK_PASSWORD || 'youshallnotpass',
-      secure: false,
+      secure: process.env.LAVALINK_SECURE === 'true',
       identifier: 'main-node'
     }
   ],
-  searchEngine: 'youtube',
+  searchEngine: 'spotify',
   defaultVolume: 80,
   autoLeave: true,
   autoLeaveDelay: 30000,
@@ -56,6 +56,24 @@ const commands = [
       option.setName('query')
         .setDescription('Song name or URL')
         .setRequired(true)
+        .setAutocomplete(true) // Enable native autocomplete
+    )
+    .addStringOption(option =>
+      option.setName('source')
+        .setDescription('Search source (youtube, spotify, soundcloud, etc)')
+        .addChoices(
+          { name: 'YouTube', value: 'youtube' },
+          { name: 'YouTube Music', value: 'youtubemusic' },
+          { name: 'Spotify', value: 'spotify' },
+          { name: 'SoundCloud', value: 'soundcloud' },
+          { name: 'Deezer', value: 'deezer' }
+        )
+    )
+    .addIntegerOption(option =>
+      option.setName('volume')
+        .setDescription('Initial volume (0-100)')
+        .setMinValue(0)
+        .setMaxValue(100)
     ),
 
   new SlashCommandBuilder()
@@ -145,21 +163,165 @@ const commands = [
   new SlashCommandBuilder()
     .setName('leave')
     .setDescription('Leave the voice channel'),
+
+  new SlashCommandBuilder()
+    .setName('clear')
+    .setDescription('Clear the music queue'),
+
+  new SlashCommandBuilder()
+    .setName('remove')
+    .setDescription('Remove a song from the queue')
+    .addIntegerOption(option =>
+      option.setName('position')
+        .setDescription('Position of the song to remove')
+        .setRequired(true)
+        .setMinValue(1)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('skipto')
+    .setDescription('Skip to a specific song in the queue')
+    .addIntegerOption(option =>
+      option.setName('position')
+        .setDescription('Position to skip to')
+        .setRequired(true)
+        .setMinValue(1)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('back')
+    .setDescription('Play the previous song'),
+
+  new SlashCommandBuilder()
+    .setName('removeduplicates')
+    .setDescription('Remove duplicate songs from the queue'),
+
+  new SlashCommandBuilder()
+    .setName('removebyrequester')
+    .setDescription('Remove all songs requested by a user')
+    .addUserOption(option =>
+      option.setName('user')
+        .setDescription('User whose songs should be removed')
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('autoplay')
+    .setDescription('Toggle autoplay mode'),
+
+  new SlashCommandBuilder()
+    .setName('lyrics')
+    .setDescription('Search for lyrics')
+    .addStringOption(option =>
+      option.setName('query')
+        .setDescription('Song name (optional, defaults to current song)')
+    ),
+
+  new SlashCommandBuilder()
+    .setName('restart')
+    .setDescription('Restart the current song'),
+
+  new SlashCommandBuilder()
+    .setName('move')
+    .setDescription('Move a song to a different position in the queue')
+    .addIntegerOption(option =>
+      option.setName('from')
+        .setDescription('Current position of the song')
+        .setRequired(true)
+        .setMinValue(1)
+    )
+    .addIntegerOption(option =>
+      option.setName('to')
+        .setDescription('New position for the song')
+        .setRequired(true)
+        .setMinValue(1)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('swap')
+    .setDescription('Swap two songs in the queue')
+    .addIntegerOption(option =>
+      option.setName('first')
+        .setDescription('Position of the first song')
+        .setRequired(true)
+        .setMinValue(1)
+    )
+    .addIntegerOption(option =>
+      option.setName('second')
+        .setDescription('Position of the second song')
+        .setRequired(true)
+        .setMinValue(1)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('mood')
+    .setDescription('Search music by mood (Suwaku Exclusive)')
+    .addStringOption(option => 
+      option.setName('mood')
+        .setDescription('The mood to search for')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Happy 😊', value: 'happy' },
+          { name: 'Sad 😢', value: 'sad' },
+          { name: 'Lo-Fi ☕', value: 'lofi' },
+          { name: 'Workout 💪', value: 'workout' },
+          { name: 'Party 🥳', value: 'party' },
+          { name: 'Focus 🧠', value: 'focus' },
+          { name: 'Dark 🌑', value: 'dark' },
+          { name: 'Romantic ❤️', value: 'romantic' }
+        )
+    ),
+
+  new SlashCommandBuilder()
+    .setName('dynamic')
+    .setDescription('Toggle Dynamic Rhythm mode (Suwaku Exclusive)'),
+
+  new SlashCommandBuilder()
+    .setName('morph')
+    .setDescription('Change your voice/audio style (Suwaku Exclusive)')
+    .addStringOption(option => 
+      option.setName('style')
+        .setDescription('The style to apply')
+        .setRequired(true)
+        .addChoices(
+          { name: 'Robot 🤖', value: 'robot' },
+          { name: 'Chipmunk 🐿️', value: 'chipmunk' },
+          { name: 'Monster 👹', value: 'monster' },
+          { name: 'Telephone ☎️', value: 'telephone' },
+          { name: 'Radio 📻', value: 'radio' },
+          { name: 'None (Reset) ❌', value: 'none' }
+        )
+    ),
 ];
 
 // Register slash commands
 async function registerCommands() {
   try {
-    console.log('🔄 Registering slash commands...');
+    const guildId = process.env.DISCORD_GUILD_ID;
+    const clientId = process.env.DISCORD_CLIENT_ID || client.user?.id;
+
+    if (!clientId) {
+      console.error('❌ ERROR: DISCORD_CLIENT_ID not found and bot is not ready.');
+      return;
+    }
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN);
 
-    await rest.put(
-      Routes.applicationCommands(process.env.DISCORD_CLIENT_ID),
-      { body: commands }
-    );
-
-    console.log('✅ Slash commands registered successfully!');
+    if (guildId) {
+      console.log(`🔄 Registering guild commands for: ${guildId}...`);
+      await rest.put(
+        Routes.applicationGuildCommands(clientId, guildId),
+        { body: commands }
+      );
+      console.log('✅ Guild commands registered!');
+    } else {
+      console.log('🔄 Registering global application commands...');
+      await rest.put(
+        Routes.applicationCommands(clientId),
+        { body: commands }
+      );
+      console.log('✅ Global commands registered!');
+    }
   } catch (error) {
     console.error('❌ Error registering slash commands:', error);
 
@@ -184,8 +346,23 @@ client.once('clientReady', async () => {
   console.log('📝 Use slash commands to control the music');
 });
 
-// Handle slash commands
+// Handle interactions
 client.on('interactionCreate', async interaction => {
+  // Handle Autocomplete
+  if (interaction.isAutocomplete()) {
+    const { commandName } = interaction;
+
+    if (commandName === 'play') {
+      const focusedValue = interaction.options.getFocused();
+      const source = interaction.options.getString('source'); // Don't default to youtube here, let the package use its default
+
+      // Use Suwaku's native autocomplete
+      const choices = await suwaku.autocomplete(focusedValue, { source });
+      
+      return interaction.respond(choices);
+    }
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
@@ -206,29 +383,31 @@ client.on('interactionCreate', async interaction => {
     // PLAY COMMAND
     if (commandName === 'play') {
       const query = interaction.options.getString('query');
+      const source = interaction.options.getString('source');
+      const volume = interaction.options.getInteger('volume');
 
       await interaction.deferReply();
 
       try {
-        // For large playlists, show progress
-        let progressMessage = null;
-        const existingPlayer = suwaku.getPlayer(interaction.guildId);
-        
-        if (existingPlayer) {
-          existingPlayer.once('playlistProgress', async (progress) => {
-            if (!progressMessage && progress.total > 100) {
-              progressMessage = await interaction.editReply({
-                content: `⏳ Adding playlist... ${progress.percentage}% (${progress.added}/${progress.total})`
-              });
-            }
+        // Step 1: Search first (New API requirement)
+        const searchResult = await suwaku.search(query, {
+          requester: interaction.member,
+          source: source // Use the selected source
+        });
+
+        if (!searchResult || !searchResult.tracks || searchResult.tracks.length === 0) {
+          return interaction.editReply({
+            content: `❌ No results found for: **${query}**${source ? ` using **${source}**` : ''}`
           });
         }
 
+        // Step 2: Play the result with reproduction options
         const result = await suwaku.play({
-          query,
+          track: searchResult,
           voiceChannel,
           textChannel: interaction.channel,
-          member: interaction.member
+          member: interaction.member,
+          volume: volume ?? undefined // Set initial volume if provided
         });
 
         if (result.isPlaylist) {
@@ -494,6 +673,227 @@ client.on('interactionCreate', async interaction => {
         await interaction.editReply(`❌ Error leaving channel: ${error.message}`);
       }
       return;
+    }
+
+    // CLEAR COMMAND
+    if (commandName === 'clear') {
+      if (!player) {
+        return interaction.reply({ content: '❌ No active player!', ephemeral: true });
+      }
+
+      if (player.queue.isEmpty) {
+        return interaction.reply({ content: '❌ Queue is already empty!', ephemeral: true });
+      }
+
+      player.clearQueue();
+      return interaction.reply('🧹 Queue cleared!');
+    }
+
+    // REMOVE COMMAND
+    if (commandName === 'remove') {
+      if (!player) {
+        return interaction.reply({ content: '❌ No active player!', ephemeral: true });
+      }
+
+      const position = interaction.options.getInteger('position');
+      
+      if (position > player.queue.size) {
+        return interaction.reply({ content: `❌ Position out of range! Queue size: ${player.queue.size}`, ephemeral: true });
+      }
+
+      const removed = player.removeTrack(position - 1);
+      return interaction.reply(`🗑️ Removed: **${removed.title}**`);
+    }
+
+    // SKIPTO COMMAND
+    if (commandName === 'skipto') {
+      if (!player) {
+        return interaction.reply({ content: '❌ No active player!', ephemeral: true });
+      }
+
+      const position = interaction.options.getInteger('position');
+
+      if (position > player.queue.size) {
+        return interaction.reply({ content: `❌ Position out of range! Queue size: ${player.queue.size}`, ephemeral: true });
+      }
+
+      await player.jumpTo(position - 1);
+      return interaction.reply(`⏭️ Skipped to song at position #${position}`);
+    }
+
+    // BACK COMMAND
+    if (commandName === 'back') {
+      if (!player) {
+        return interaction.reply({ content: '❌ No active player!', ephemeral: true });
+      }
+
+      if (player.queue.previous.length === 0) {
+        return interaction.reply({ content: '❌ No previous song found in history!', ephemeral: true });
+      }
+
+      await player.back();
+      return interaction.reply('⏮️ Playing previous song!');
+    }
+
+    // REMOVEDUPLICATES COMMAND
+    if (commandName === 'removeduplicates') {
+      if (!player) {
+        return interaction.reply({ content: '❌ No active player!', ephemeral: true });
+      }
+
+      const removedCount = player.queue.removeDuplicates();
+      return interaction.reply(`♻️ Removed ${removedCount} duplicate songs!`);
+    }
+
+    // REMOVEBYREQUESTER COMMAND
+    if (commandName === 'removebyrequester') {
+      if (!player) {
+        return interaction.reply({ content: '❌ No active player!', ephemeral: true });
+      }
+
+      const user = interaction.options.getUser('user');
+      const removed = player.queue.removeByRequester(user.id);
+      
+      return interaction.reply(`🗑️ Removed ${removed.length} songs requested by **${user.tag}**!`);
+    }
+
+    // AUTOPLAY COMMAND
+    if (commandName === 'autoplay') {
+      if (!player) {
+        return interaction.reply({ content: '❌ No active player!', ephemeral: true });
+      }
+
+      player.options.autoPlay = !player.options.autoPlay;
+      return interaction.reply(`♾️ Autoplay is now **${player.options.autoPlay ? 'ENABLED' : 'DISABLED'}**`);
+    }
+
+    // LYRICS COMMAND
+    if (commandName === 'lyrics') {
+      const query = interaction.options.getString('query') || player?.current?.title;
+
+      if (!query) {
+        return interaction.reply({ content: '❌ Please provide a song name or play something first!', ephemeral: true });
+      }
+
+      await interaction.deferReply();
+
+      try {
+        const lyrics = await suwaku.lyricsManager.search(query);
+        
+        if (!lyrics) {
+          return interaction.editReply(`❌ No lyrics found for: **${query}**`);
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle(`📜 Lyrics: ${lyrics.title}`)
+          .setAuthor({ name: lyrics.artist })
+          .setDescription(lyrics.lyrics.length > 4000 ? lyrics.lyrics.substring(0, 4000) + '...' : lyrics.lyrics)
+          .setColor('#0099ff');
+
+        if (lyrics.thumbnail) embed.setThumbnail(lyrics.thumbnail);
+
+        return interaction.editReply({ embeds: [embed] });
+      } catch (error) {
+        return interaction.editReply(`❌ Error fetching lyrics: ${error.message}`);
+      }
+    }
+
+    // RESTART COMMAND
+    if (commandName === 'restart') {
+      if (!player || !player.current) {
+        return interaction.reply({ content: '❌ No song playing!', ephemeral: true });
+      }
+
+      await player.restart();
+      return interaction.reply('🔄 Restarted the current song!');
+    }
+
+    // MOVE COMMAND
+    if (commandName === 'move') {
+      if (!player) {
+        return interaction.reply({ content: '❌ No active player!', ephemeral: true });
+      }
+
+      const from = interaction.options.getInteger('from');
+      const to = interaction.options.getInteger('to');
+
+      if (from > player.queue.size || to > player.queue.size) {
+        return interaction.reply({ content: `❌ Position out of range! Queue size: ${player.queue.size}`, ephemeral: true });
+      }
+
+      player.queue.move(from - 1, to - 1);
+      return interaction.reply(`🚚 Moved song from position **#${from}** to **#${to}**`);
+    }
+
+    // SWAP COMMAND
+    if (commandName === 'swap') {
+      if (!player) {
+        return interaction.reply({ content: '❌ No active player!', ephemeral: true });
+      }
+
+      const first = interaction.options.getInteger('first');
+      const second = interaction.options.getInteger('second');
+
+      if (first > player.queue.size || second > player.queue.size) {
+        return interaction.reply({ content: `❌ Position out of range! Queue size: ${player.queue.size}`, ephemeral: true });
+      }
+
+      player.queue.swap(first - 1, second - 1);
+      return interaction.reply(`🔀 Swapped songs at positions **#${first}** and **#${second}**`);
+    }
+
+    // MOOD COMMAND (Suwaku Exclusive)
+    if (commandName === 'mood') {
+      const mood = interaction.options.getString('mood');
+
+      await interaction.deferReply();
+
+      const searchResult = await suwaku.searchByMood(mood, { requester: interaction.member });
+      
+      if (!searchResult || !searchResult.tracks || searchResult.tracks.length === 0) {
+        return interaction.editReply('❌ No tracks found for this mood!');
+      }
+
+      await suwaku.play({
+        track: searchResult,
+        voiceChannel,
+        textChannel: interaction.channel,
+        member: interaction.member
+      });
+
+      if (searchResult.suggestedPreset) {
+        const currentPlayer = suwaku.getPlayer(interaction.guildId);
+        if (currentPlayer) await currentPlayer.filters.applyPreset(searchResult.suggestedPreset);
+      }
+
+      return interaction.editReply(`✨ **Mood: ${mood}** - Added **${searchResult.tracks[0].title}** to queue${searchResult.suggestedPreset ? ` with **${searchResult.suggestedPreset}** filter` : ''}!`);
+    }
+
+    // DYNAMIC COMMAND (Suwaku Exclusive)
+    if (commandName === 'dynamic') {
+      if (!player) {
+        return interaction.reply({ content: '❌ No active player!', ephemeral: true });
+      }
+      
+      const isEnabled = player.toggleDynamicRhythm();
+      return interaction.reply(isEnabled ? '⚡ **Dynamic Rhythm Enabled!** The bass will now pulse with the beat.' : '🛑 **Dynamic Rhythm Disabled.**');
+    }
+
+    // MORPH COMMAND (Suwaku Exclusive)
+    if (commandName === 'morph') {
+      if (!player) {
+        return interaction.reply({ content: '❌ No active player!', ephemeral: true });
+      }
+      
+      const style = interaction.options.getString('style');
+      
+      if (style === 'none') {
+        await player.filters.clearFilters();
+        return interaction.reply('✨ Audio style reset to normal.');
+      }
+
+      await player.filters.applyPreset(style);
+      return interaction.reply(`🎭 Audio morphed to: **${style.toUpperCase()}**`);
     }
 
   } catch (error) {

@@ -11,6 +11,12 @@ import { StatsManager } from "../managers/StatsManager.js";
 import { LyricsManager } from "../managers/LyricsManager.js";
 import { VoiceStateManager } from "../lavalink/VoiceStateManager.js";
 import { Defaults } from "../utils/constants.js";
+import Structure from "../structures/Structure.js";
+import { PersistenceManager } from "../persistence/PersistenceManager.js";
+import { SuwakuTrack } from "../structures/SuwakuTrack.js";
+import { SuwakuPlayer } from "../structures/SuwakuPlayer.js";
+import { SuwakuQueue } from "../structures/SuwakuQueue.js";
+import { LavalinkNode as Node } from "../lavalink/LavalinkNode.js";
 import {
   validateObject,
   validateNonEmptyArray,
@@ -57,6 +63,9 @@ class SuwakuClient extends EventEmitter {
    * @param {number} [options.maxStuckRetries=3] - Maximum number of retry attempts for stuck tracks
    * @param {boolean} [options.enableHealthMonitor=true] - Enable continuous health monitoring and auto-correction
    * @param {number} [options.healthMonitorInterval=15000] - Health monitor check interval (ms)
+   * @param {Object} [options.spotify] - Spotify credentials for fallback resolution
+   * @param {string} [options.spotify.clientId] - Spotify Client ID
+   * @param {string} [options.spotify.clientSecret] - Spotify Client Secret
    */
   constructor(discordClient, options = {}) {
     super();
@@ -98,6 +107,10 @@ class SuwakuClient extends EventEmitter {
       maxPlaylistSize: options.maxPlaylistSize ?? 500,
       allowDuplicates: options.allowDuplicates ?? true,
 
+      // Persistence
+      persistencePrefix: options.persistencePrefix ?? "suwaku:player:",
+      storageAdapter: options.storageAdapter ?? null,
+
       // Features
       enableFilters: options.enableFilters ?? true,
       enableLyrics: options.enableLyrics ?? false,
@@ -135,6 +148,12 @@ class SuwakuClient extends EventEmitter {
 
       ...options,
     };
+
+    // Register Default Structures
+    Structure.structures.Track = Structure.structures.Track || SuwakuTrack;
+    Structure.structures.Player = Structure.structures.Player || SuwakuPlayer;
+    Structure.structures.Queue = Structure.structures.Queue || SuwakuQueue;
+    Structure.structures.Node = Structure.structures.Node || Node;
 
     /**
      * Suwaku version
@@ -183,6 +202,15 @@ class SuwakuClient extends EventEmitter {
      * @type {LyricsManager}
      */
     this.lyricsManager = new LyricsManager(this);
+
+    /**
+     * Persistence Manager
+     * @type {PersistenceManager}
+     */
+    this.persistence = new PersistenceManager(this, {
+      storage: this.options.storageAdapter,
+      prefix: this.options.persistencePrefix
+    });
 
     /**
      * Voice state manager
@@ -314,6 +342,11 @@ class SuwakuClient extends EventEmitter {
         textChannelId: textChannel?.id,
       });
 
+    // Update text channel if provided
+    if (textChannel) {
+      player.textChannelId = textChannel.id;
+    }
+
     // Apply reproduction options to player
     if (volume !== undefined) player.setVolume(volume);
     if (paused !== undefined) player.setPaused(paused);
@@ -332,10 +365,10 @@ class SuwakuClient extends EventEmitter {
         searchResult = track;
       } else if (Array.isArray(track)) {
         // It's an array of tracks
-        searchResult = { type: "SEARCH", tracks: track };
+        searchResult = { loadType: "search", tracks: track };
       } else {
         // It's a single track
-        searchResult = { type: "TRACK", tracks: [track] };
+        searchResult = { loadType: "track", tracks: [track] };
       }
     } else if (query) {
       // Legacy support: search if only query is provided
@@ -358,13 +391,9 @@ class SuwakuClient extends EventEmitter {
     }
 
     // Check if it's a playlist result
-    const isPlaylist = searchResult.type === "PLAYLIST";
+    const isPlaylist = searchResult.loadType === "playlist";
     const tracks = searchResult.tracks;
-    const playlistInfo = searchResult.playlistName
-      ? {
-          name: searchResult.playlistName,
-        }
-      : null;
+    const playlistInfo = searchResult.playlistInfo || (searchResult.playlistName ? { name: searchResult.playlistName } : null);
 
     // Set requester if provided and not already set
     if (member) {
@@ -372,31 +401,36 @@ class SuwakuClient extends EventEmitter {
         typeof member === "string"
           ? { id: member }
           : {
-              id: member.id,
-              username: member.user?.username || member.username,
-              displayName: member.displayName || member.username,
-            };
+            id: member.id,
+            username: member.user?.username || member.username,
+            displayName: member.displayName || member.username,
+            avatar: member.user?.displayAvatarURL() || null
+          };
 
       tracks.forEach((t) => {
-        if (!t.requester) t.setRequester(requesterInfo);
+        t.setRequester(requesterInfo);
       });
     }
 
     // Add to queue
     const wasEmpty = player.queue.isEmpty && !player.current;
 
-    if (isPlaylist && tracks.length > 1) {
-      if (tracks.length > 50) {
+    // Determine if we should add multiple tracks
+    // Add multiple if it's explicitly a playlist OR if tracks array has more than one item and it's not a single-result search
+    const shouldAddMultiple = isPlaylist || (tracks.length > 1 && (Array.isArray(track) || options.addAllResults));
+
+    if (shouldAddMultiple) {
+      if (tracks.length > (this.options.batchThreshold || 50)) {
         await player.addTracksBatch(tracks, { playlistInfo });
       } else {
         player.addTracks(tracks, playlistInfo);
       }
-    } else {
+    } else if (tracks.length > 0) {
       player.addTrack(tracks[0]);
     }
 
     // Start playing if queue was empty
-    if (wasEmpty) {
+    if (wasEmpty && tracks.length > 0) {
       await player.play(undefined, {
         startTime,
         endTime,
@@ -509,6 +543,13 @@ class SuwakuClient extends EventEmitter {
     return true;
   }
 
+  /**
+   * Restore all players from persistent storage
+   * @returns {Promise<number>} Number of restored players
+   */
+  async restorePlayers() {
+    return this.persistence.restore();
+  }
   /**
    * Get a player by guild ID
    * @param {string} guildId - Guild ID
@@ -754,6 +795,14 @@ class SuwakuClient extends EventEmitter {
 
     this.ready = false;
     this.emit("destroy");
+  }
+
+  /**
+   * Restore all players from persistent storage
+   * @returns {Promise<number>} Number of restored players
+   */
+  async restorePlayers() {
+    return this.persistence.restore();
   }
 }
 

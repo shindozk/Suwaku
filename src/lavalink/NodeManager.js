@@ -4,7 +4,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { LavalinkNode } from './LavalinkNode.js';
+import Structure from '../structures/Structure.js';
 import { NodeNotFoundError } from '../utils/errors.js';
 import { validateNonEmptyArray, validateNonEmptyString } from '../utils/validators.js';
 
@@ -32,6 +32,13 @@ class NodeManager extends EventEmitter {
      * @type {boolean}
      */
     this.initialized = false;
+
+    /**
+     * Health check interval
+     * @type {NodeJS.Timeout|null}
+     * @private
+     */
+    this._healthCheckInterval = null;
   }
 
   /**
@@ -47,6 +54,31 @@ class NodeManager extends EventEmitter {
 
     this.initialized = true;
     this.emit('debug', `Initialized ${this.nodes.size} node(s)`);
+
+    // Start proactive health monitoring if enabled
+    if (this.client.options.enableHealthMonitor !== false) {
+      this._startHealthMonitoring();
+    }
+  }
+
+  /**
+   * Start proactive health monitoring for all nodes
+   * @private
+   */
+  _startHealthMonitoring() {
+    if (this._healthCheckInterval) clearInterval(this._healthCheckInterval);
+
+    const interval = this.client.options.healthMonitorInterval || 30000;
+    this._healthCheckInterval = setInterval(async () => {
+      for (const node of this.nodes.values()) {
+        const health = node.getHealth();
+        if (!health.healthy && node.connected) {
+          const issues = health.issues.join(', ');
+          this.emit('warn', `Proactive Failover: Node ${node.identifier} is unstable (${issues}). Migrating players...`);
+          await this._handleNodeFailure(node);
+        }
+      }
+    }, interval);
   }
 
   /**
@@ -55,7 +87,8 @@ class NodeManager extends EventEmitter {
    * @returns {LavalinkNode} The created node
    */
   add(config) {
-    const node = new LavalinkNode(this.client, config);
+    const NodeClass = Structure.get('Node');
+    const node = new NodeClass(this.client, config);
 
     // Forward node events
     node.on('connect', () => {
@@ -65,11 +98,13 @@ class NodeManager extends EventEmitter {
 
     node.on('disconnect', data => {
       this.emit('nodeDisconnect', node, data);
-      this.emit('debug', `Node ${node.identifier} disconnected`);
-      
+      this.emit('debug', `Node ${node.identifier} disconnected (Code: ${data.code})`);
+
       // AQUAlink Feature: Fail-safe / Auto-resume
-      // If a node disconnects, move its players to another healthy node
-      this._handleNodeFailure(node);
+      // If a node disconnects unexpectedly, move its players to another healthy node
+      if (data.code !== 1000 && data.code !== 1001) {
+        this._handleNodeFailure(node);
+      }
     });
 
     node.on('error', error => {
@@ -116,11 +151,12 @@ class NodeManager extends EventEmitter {
     const players = this.client.playerManager.getAll().filter(p => p.node.identifier === failedNode.identifier);
     if (players.length === 0) return;
 
-    this.emit('debug', `Node ${failedNode.identifier} failed. Migrating ${players.length} players...`);
+    this.emit('debug', `Node ${failedNode.identifier} failed/unstable. Migrating ${players.length} players...`);
 
-    const bestNode = this.getBest();
+    // Get best node EXCLUDING the failing/failed one
+    const bestNode = this.getBest(failedNode.identifier);
     if (!bestNode) {
-      this.emit('error', new Error(`Critical: Node ${failedNode.identifier} failed and no other nodes are available for migration!`));
+      this.emit('error', new Error(`Critical: Node ${failedNode.identifier} is down/unstable and no other healthy nodes are available for migration!`));
       return;
     }
 
@@ -188,10 +224,13 @@ class NodeManager extends EventEmitter {
 
   /**
    * Get the best node using Least Load balancing (AQUAlink Feature)
+   * @param {string} [excludeId] - Optional identifier to exclude from search
    * @returns {LavalinkNode|null} The best node or null
    */
-  getBest() {
-    const connected = this.getConnected();
+  getBest(excludeId) {
+    let connected = this.getConnected();
+    if (excludeId) connected = connected.filter(n => n.identifier !== excludeId);
+
     if (connected.length === 0) return null;
 
     // Least Load Balancing algorithm
@@ -212,32 +251,32 @@ class NodeManager extends EventEmitter {
     if (!node.stats) return node.calls;
 
     const stats = node.stats;
-    
+
     // Penalize high CPU load (0-1 range)
     const cpuLoad = (stats.cpu?.systemLoad || 0) * 100;
-    
+
     // Penalize high memory usage
     const memUsed = stats.memory?.used || 0;
     const memTotal = stats.memory?.reservable || 1;
     const memUsage = (memUsed / memTotal) * 100;
-    
+
     // Player count is a major factor
     const playingPlayers = stats.playingPlayers || 0;
     const totalPlayers = stats.players || 0;
-    
+
     // Frame issues are serious
     const framesDeficit = stats.frameStats?.deficit || 0;
     const framesNulled = stats.frameStats?.nulled || 0;
-    
+
     // Calculate score (weighted)
     let score = (playingPlayers * 2) + (totalPlayers * 0.5);
     score += cpuLoad * 1.5;
     score += memUsage * 0.5;
     score += (framesDeficit + framesNulled) * 10;
-    
+
     // Also consider node-specific calls as a tie-breaker
     score += (node.calls / 1000);
-    
+
     return score;
   }
 
@@ -289,7 +328,7 @@ class NodeManager extends EventEmitter {
     if (connected.length === 0) return null;
 
     // Try to find a node with matching region
-    const regional = connected.find(node => 
+    const regional = connected.find(node =>
       node.options.region && node.options.region === region
     );
 

@@ -24,10 +24,11 @@ function displayWelcome() {
   console.log('');
   console.log(colorize('╔════════════════════════════════════════════════════════════╗', 'cyan'));
   console.log(colorize('║                                                            ║', 'cyan'));
-  console.log(colorize('║  ', 'cyan') + colorize('🎵 Suwaku', 'bright') + colorize(' - Lavalink Music Player for Discord.js     ║', 'cyan'));
+  console.log(colorize('║  ', 'cyan') + colorize('🎵 Suwaku', 'bright') + colorize(' - Lavalink Music Player     ║', 'cyan'));
   console.log(colorize('║                                                            ║', 'cyan'));
-  console.log(colorize('║  ', 'cyan') + colorize(`Version: ${version}`, 'green') + colorize('                                          ║', 'cyan'));
+  console.log(colorize('║  ', 'cyan') + colorize(`Version: ${version}`, 'green') + colorize('                         ║', 'cyan'));
   console.log(colorize('║                                                            ║', 'cyan'));
+  console.log(colorize('║  Elite Features: SponsorBlock, structure.extend, Failover  ║', 'yellow'));
   console.log(colorize('╚════════════════════════════════════════════════════════════╝', 'cyan'));
   console.log('');
   console.log(colorize('📚 Quick Start:', 'bright'));

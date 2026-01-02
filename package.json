@@ -1,6 +1,6 @@
 {
   "name": "suwaku",
-  "version": "1.0.5",
+  "version": "1.1.0",
   "description": "A powerful and flexible Lavalink-based music player for Discord bots. Built with Node.js, featuring multi-source support, advanced queue management, and comprehensive event system.",
   "main": "src/main.js",
   "types": "types/index.d.ts",
@@ -39,6 +39,10 @@
     "youtube",
     "spotify",
     "soundcloud",
+    "apple-music",
+    "deezer",
+    "tidal",
+    "lyrics",
     "streaming",
     "discord.js",
     "suwaku"
@@ -53,11 +57,14 @@
   "bugs": {
     "url": "https://github.com/shindozk/Suwaku/issues"
   },
-  "homepage": "https://github.com/shindozk/Suwaku#readme",
   "readme": "https://github.com/shindozk/Suwaku#readme",
   "dependencies": {
     "axios": "^1.7.7",
     "events": "^3.3.0",
+    "fetch-cookie": "^3.2.0",
+    "genius-lyrics": "^4.4.7",
+    "lrclib-api": "^2.0.4",
+    "node-fetch": "^3.3.2",
     "uuid": "^10.0.0",
     "ws": "^8.16.0"
   },

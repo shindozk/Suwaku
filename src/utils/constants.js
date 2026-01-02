@@ -275,3 +275,18 @@ export const PlayerMovedState = {
   LEFT: 'LEFT',
   MOVED: 'MOVED'
 };
+
+/**
+ * SponsorBlock categories to skip
+ * @enum {string}
+ */
+export const SponsorBlockCategory = {
+  SPONSOR: 'sponsor',
+  SELFPROMO: 'selfpromo',
+  INTERACTION: 'interaction',
+  INTRO: 'intro',
+  OUTRO: 'outro',
+  PREVIEW: 'preview',
+  MUSIC_OFFTOPIC: 'music_offtopic',
+  FILLER: 'filler'
+};

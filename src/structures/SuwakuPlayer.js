@@ -4,7 +4,7 @@
  */
 
 import { EventEmitter } from "events";
-import { SuwakuQueue } from "./SuwakuQueue.js";
+import Structure from "./Structure.js";
 import { FilterManager } from "../managers/FilterManager.js";
 import { PlayerState, TrackEndReason, DefaultPlayerOptions } from "../utils/constants.js";
 import {
@@ -42,7 +42,11 @@ class SuwakuPlayer extends EventEmitter {
      * Player options merged with defaults
      * @type {Object}
      */
-    this.options = { ...DefaultPlayerOptions, ...options };
+    this.options = {
+      sponsorBlockCategories: [],
+      ...DefaultPlayerOptions,
+      ...options
+    };
 
     /**
      * Guild ID
@@ -72,7 +76,8 @@ class SuwakuPlayer extends EventEmitter {
      * Queue instance
      * @type {SuwakuQueue}
      */
-    this.queue = new SuwakuQueue(this);
+    const QueueClass = Structure.get('Queue');
+    this.queue = new QueueClass(this);
 
     /**
      * Filter manager
@@ -136,6 +141,12 @@ class SuwakuPlayer extends EventEmitter {
     if (this.client.options.enableHealthMonitor !== false) {
       this._startHealthMonitoring();
     }
+
+    /**
+     * Timestamp when player was created
+     * @type {number}
+     */
+    this.createdAt = Date.now();
   }
 
   /**
@@ -162,16 +173,16 @@ class SuwakuPlayer extends EventEmitter {
    */
   toggleDynamicRhythm(enable) {
     const newState = enable ?? !this._dynamicRhythmInterval;
-    
+
     if (newState && !this._dynamicRhythmInterval) {
       this.client.emit('debug', `Enabling Dynamic Rhythm for guild ${this.guildId}`);
-      
+
       let step = 0;
       this._dynamicRhythmInterval = setInterval(async () => {
         if (!this.playing || this.paused) return;
-        
+
         step = (step + 1) % 4;
-        
+
         // Dynamic Bass Pulse
         const pulseGains = [
           { band: 0, gain: 0.6 },
@@ -179,7 +190,7 @@ class SuwakuPlayer extends EventEmitter {
           { band: 0, gain: 0.1 },
           { band: 1, gain: 0.3 }
         ];
-        
+
         try {
           await this.filters.setEqualizer([pulseGains[step]]);
         } catch (e) {
@@ -192,7 +203,7 @@ class SuwakuPlayer extends EventEmitter {
       this._dynamicRhythmInterval = null;
       this.filters.removeFilter('equalizer');
     }
-    
+
     return !!this._dynamicRhythmInterval;
   }
 
@@ -203,77 +214,21 @@ class SuwakuPlayer extends EventEmitter {
   _setupNodeListeners() {
     this._nodeMessageListener = this._handleNodeMessage.bind(this);
     this.node.on("message", this._nodeMessageListener);
+
+    this.node.on("ready", async () => {
+      this.client.emit("debug", `Node ${this.node.identifier} ready for player in guild ${this.guildId}`);
+      if (this.options.sponsorBlockCategories?.length > 0) {
+        await this.setSponsorBlock(this.options.sponsorBlockCategories);
+      }
+    });
   }
 
   /**
-   * Check idle state and manage timeout
+   * Handle voice state update
    * @private
    */
-  _checkIdleState() {
-    if (this._idleTimeout) {
-      clearTimeout(this._idleTimeout);
-      this._idleTimeout = null;
-    }
-
-    if (!this.playing && this.client.options.idleTimeout > 0) {
-      this.client.emit("debug", `Player idle in guild ${this.guildId}. Starting ${this.client.options.idleTimeout}ms timeout.`);
-      this._idleTimeout = setTimeout(() => {
-        this.client.emit("debug", `Idle timeout reached for guild ${this.guildId}. Destroying player.`);
-        this.destroy();
-      }, this.client.options.idleTimeout);
-    }
-  }
-
-  /**
-   * Destroy the player
-   * @returns {Promise<void>}
-   */
-  async destroy() {
-    if (this.state === PlayerState.DESTROYED) return;
-
-    this.client.emit("debug", `Destroying player for guild ${this.guildId}`);
-
-    // Remove node listener to prevent memory leaks
-    if (this._nodeMessageListener) {
-      this.node.removeListener("message", this._nodeMessageListener);
-    }
-
-    // Clear dynamic rhythm interval if active
-    if (this._dynamicRhythmInterval) {
-      clearInterval(this._dynamicRhythmInterval);
-      this._dynamicRhythmInterval = null;
-    }
-
-    // Clear idle timeout
-    if (this._idleTimeout) {
-      clearTimeout(this._idleTimeout);
-      this._idleTimeout = null;
-    }
-
-    // Stop playback and destroy in Lavalink
-    try {
-      await this.node.rest.destroyPlayer(this.guildId);
-    } catch (error) {
-      this.client.emit("debug", `Error destroying player in Lavalink: ${error.message}`);
-    }
-
-    // Disconnect from voice
-    this.disconnect();
-
-    this.state = PlayerState.DESTROYED;
-    this.playing = false;
-    this.paused = false;
-
-    // Remove from manager
-    this.client.playerManager.delete(this.guildId);
-
-    // Destroy queue
-    if (this.queue) {
-      this.queue.destroy();
-    }
-
-    this.emit("destroy", this);
-    this.removeAllListeners();
+  handleVoiceStateUpdate() {
+    this._checkIdleState();
   }
 
   /**
@@ -347,22 +302,24 @@ class SuwakuPlayer extends EventEmitter {
    * @param {Object} event - Event data
    * @private
    */
-  _handleTrackStart(event) {
+  async _handleTrackStart(event) {
     this.state = PlayerState.PLAYING;
     this.playing = true;
     this.paused = false;
+    this.position = 0;
+    this.lastPositionUpdate = Date.now();
     this._checkIdleState();
 
     // If current is null, we can't do much - just log a warning
     if (!this.current) {
-      this.client.emit("debug", "Track started but no current track in queue");
+      this.client.emit("debug", `[Player ${this.guildId}] Track started but no current track in queue. Queue state: ${this.queue.tracks.length} tracks, state: ${this.state}`);
       this.state = PlayerState.IDLE;
       return;
     }
 
     this.client.emit(
       "debug",
-      `Track started: ${this.current.title} in guild ${this.guildId}`,
+      `[Player ${this.guildId}] Track started: ${this.current.title}. TextChannel: ${this.textChannelId}`,
     );
 
     // Emit on player - PlayerManager will forward to client
@@ -559,8 +516,8 @@ class SuwakuPlayer extends EventEmitter {
 
         if (results && results.tracks && results.tracks.length > 0) {
           // Filter out current and previous tracks to avoid loops
-          const nextTrack = results.tracks.find(t => 
-            t.identifier !== baseTrack.identifier && 
+          const nextTrack = results.tracks.find(t =>
+            t.identifier !== baseTrack.identifier &&
             !this.queue.history.some(h => h.identifier === t.identifier)
           );
 
@@ -587,13 +544,13 @@ class SuwakuPlayer extends EventEmitter {
     if (!this.queue.current) return false;
 
     this.client.emit("debug", `Restarting track: ${this.queue.current.title}`);
-    
+
     // Save current position for accurate resume
     const resumePosition = this.position;
-    
-    return this.play(this.queue.current, { 
+
+    return this.play(this.queue.current, {
       startTime: resumePosition,
-      noReplace: false 
+      noReplace: false
     });
   }
 
@@ -605,28 +562,68 @@ class SuwakuPlayer extends EventEmitter {
   async moveNode(node) {
     if (!node) throw new Error("No node provided for moveNode");
     if (node.identifier === this.node.identifier) return false;
+    if (!node.connected) throw new Error(`Cannot move to node ${node.identifier} because it's not connected`);
 
     this.client.emit("debug", `Moving player from ${this.node.identifier} to ${node.identifier}`);
 
-    // Pause current node if playing
-    if (this.playing) {
-      try {
+    // Mark as transitioning to prevent event collisions
+    this._isMoving = true;
+
+    // Pause/Stop current node if possible
+    try {
+      if (this.playing) {
         await this.node.rest.updatePlayer(this.guildId, { paused: true });
-      } catch (e) {
-        this.client.emit("debug", `Warning: Failed to pause player during migration: ${e.message}`);
       }
+    } catch (e) {
+      this.client.emit("debug", `Warning: Failed to cleanup old node during migration: ${e.message}`);
     }
 
     // Update node reference
-    const oldNode = this.node;
     this.node = node;
 
     // Resume on new node if it was playing
+    let success = true;
     if (this.playing) {
-      return this.restart();
+      success = await this.restart();
     }
 
-    return true;
+    this._isMoving = false;
+    return success;
+  }
+
+  /**
+   * Set SponsorBlock categories to skip (Lavalink SponsorBlock Plugin Feature)
+   * @param {Array<string>} categories - Categories to skip (sponsor, intro, etc)
+   * @returns {Promise<boolean>} Whether categories were set
+   */
+  async setSponsorBlock(categories = []) {
+    if (!Array.isArray(categories)) throw new Error("Categories must be an array");
+
+    this.client.emit("debug", `Setting SponsorBlock categories for guild ${this.guildId}: ${categories.join(", ")}`);
+
+    try {
+      // In Lavalink v4 with SponsorBlock plugin, this is done via a REST PUT to /v4/sessions/{sessionId}/players/{guildId}/sponsorblock/categories
+      // Note: This requires the SponsorBlock Lavalink plugin to be installed.
+      await this.node.rest.doRequest(`/sessions/${this.node.sessionId}/players/${this.guildId}/sponsorblock/categories`, {
+        method: 'PUT',
+        data: categories
+      });
+
+      this.options.sponsorBlockCategories = categories;
+      return true;
+    } catch (error) {
+      this.client.emit("debug", `Failed to set SponsorBlock: ${error.message}`);
+      // Fallback: If REST fails, it might be an older version or plugin is missing
+      return false;
+    }
+  }
+
+  /**
+   * Disable SponsorBlock for this player
+   * @returns {Promise<boolean>} Whether SponsorBlock was disabled
+   */
+  async disableSponsorBlock() {
+    return this.setSponsorBlock([]);
   }
 
   /**
@@ -798,11 +795,19 @@ class SuwakuPlayer extends EventEmitter {
         },
         position: options.startTime || 0,
         volume: this.volume,
+        filters: this.filters?.filters || {}
       };
 
       if (options.endTime) {
         updateData.endTime = options.endTime;
       }
+
+      // Move current track to history if we're playing a new one provided directly
+      if (track && this.queue.current && track.id !== this.queue.current.id) {
+        this.queue.addToHistory(this.queue.current);
+      }
+
+      this.queue.current = track;
 
       await this.node.rest.updatePlayer(
         this.guildId,
@@ -810,7 +815,6 @@ class SuwakuPlayer extends EventEmitter {
         options.noReplace,
       );
 
-      this.queue.current = track;
       this.state = PlayerState.CONNECTED;
       this.playing = true;
       this.paused = false;
@@ -880,6 +884,13 @@ class SuwakuPlayer extends EventEmitter {
         track: { encoded: null },
       });
       this.state = PlayerState.IDLE;
+      this.playing = false;
+
+      // Add current track to history before clearing it
+      if (this.current) {
+        this.queue.addToHistory(this.current);
+      }
+
       this.queue.current = null;
       this.position = 0;
       this.emit("stop", this);
@@ -1076,8 +1087,10 @@ class SuwakuPlayer extends EventEmitter {
     }
 
     const timeSinceUpdate = Date.now() - this.lastPositionUpdate;
+    // Applying a small offset (200ms) to compensate for network latency and Lavalink update lag
+    // This makes the lyrics sync feel more "on the beat"
     return Math.min(
-      this.position + timeSinceUpdate,
+      this.position + timeSinceUpdate + 200,
       this.current?.duration || 0,
     );
   }
@@ -1499,26 +1512,15 @@ class SuwakuPlayer extends EventEmitter {
       this._lastKnownPosition = currentPosition;
     }
 
-    // Check node health
-    if (this.node && !this.node.connected) {
-      this.client.emit(
-        "debug",
-        `Node disconnected for player ${this.guildId}, attempting to reconnect...`,
-      );
+    // Check node health fallback
+    if (this.node && !this.node.connected && !this._isMoving) {
+      this.client.emit("debug", `Node disconnected for player ${this.guildId}. Attempting local recovery...`);
 
-      // Try to get a new node
-      const newNode = this.client.nodes.getLeastUsed();
-      if (newNode && newNode.connected) {
-        this.node = newNode;
-        this.client.emit(
-          "debug",
-          `Switched to new node: ${newNode.identifier}`,
-        );
-
-        // Try to resume playback
-        if (this.current) {
-          await this._autoCorrectPlayback();
-        }
+      const newNode = this.client.nodes.getBest(this.node.identifier);
+      if (newNode) {
+        this.moveNode(newNode).catch(err => {
+          this.client.emit("debug", `Local recovery failed: ${err.message}`);
+        });
       }
     }
   }
@@ -1675,6 +1677,30 @@ class SuwakuPlayer extends EventEmitter {
       queue: this.queue.toJSON(),
       node: this.node.identifier,
       createdAt: this.createdAt,
+    };
+  }
+
+  /**
+   * Convert player to JSON for persistence
+   * @returns {Object} JSON representation
+   */
+  toJSON() {
+    return {
+      guildId: this.guildId,
+      voiceChannelId: this.voiceChannelId,
+      textChannelId: this.textChannelId,
+      state: this.state,
+      playing: this.playing,
+      paused: this.paused,
+      volume: this.volume,
+      position: this.position,
+      options: this.options,
+      loop: this.queue.loop,
+      current: this.current?.toJSON() || null,
+      queue: this.queue.toJSON(),
+      filters: this.filters.toJSON(),
+      node: this.node?.identifier,
+      createdAt: this.createdAt
     };
   }
 }

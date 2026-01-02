@@ -3,9 +3,24 @@
 // Definitions by: shindozk
 
 import { EventEmitter } from 'events';
-import { Client, VoiceChannel, TextChannel, GuildMember } from 'discord.js';
+import { Client, VoiceChannel, TextChannel, GuildMember, User } from 'discord.js';
 
 export const version: string;
+
+// ===== Structures Manager =====
+
+export type StructureName = 'Player' | 'Track' | 'Queue' | 'Node';
+
+export class Structure {
+    static structures: {
+        Player: any;
+        Track: any;
+        Queue: any;
+        Node: any;
+    };
+    static extend(name: StructureName, extender: (base: any) => any): any;
+    static get(name: StructureName): any;
+}
 
 // ===== Main Client =====
 
@@ -13,12 +28,43 @@ export interface SuwakuOptions {
     nodes: NodeOptions[];
     defaultVolume?: number;
     defaultSearchSource?: string;
+    playbackEngine?: string;
     autoPlay?: boolean;
     autoLeave?: boolean;
     autoLeaveDelay?: number;
+    leaveOnEmpty?: boolean;
+    leaveOnEmptyDelay?: number;
+    leaveOnEnd?: boolean;
     idleTimeout?: number;
     historySize?: number;
+    maxQueueSize?: number;
+    maxPlaylistSize?: number;
+    allowDuplicates?: boolean;
+    enableFilters?: boolean;
+    enableLyrics?: boolean;
+    enableSourceFallback?: boolean;
+    sortByRegion?: boolean;
+    resumeOnReconnect?: boolean;
+    reconnectDelay?: number;
+    reconnectAttempts?: number;
+    enableHealthCheck?: boolean;
+    healthCheckInterval?: number;
+    loadBalancer?: boolean;
+    trackPlayerMoved?: boolean;
+    retryOnStuck?: boolean;
+    stuckThreshold?: number;
+    maxStuckRetries?: number;
+    enableHealthMonitor?: boolean;
+    healthMonitorInterval?: number;
+    sponsorBlockCategories?: SponsorBlockCategory[];
+    autoplayPlatform?: string[];
+    spotify?: {
+        clientId: string;
+        clientSecret: string;
+    };
 }
+
+export type SponsorBlockCategory = 'sponsor' | 'selfpromo' | 'interaction' | 'intro' | 'outro' | 'preview' | 'music_offtopic' | 'filler';
 
 export interface NodeOptions {
     host: string;
@@ -31,11 +77,14 @@ export interface NodeOptions {
 }
 
 export interface PlayOptions {
-    query: string;
+    query?: string;
+    track?: SuwakuTrack | SearchResult;
     voiceChannel: VoiceChannel;
     textChannel?: TextChannel;
     member: GuildMember;
     source?: string;
+    volume?: number;
+    paused?: boolean;
 }
 
 export class SuwakuClient extends EventEmitter {
@@ -49,13 +98,15 @@ export class SuwakuClient extends EventEmitter {
     public nodes: NodeManager;
     public playerManager: PlayerManager;
     public searchManager: SearchManager;
+    public statsManager: StatsManager;
+    public lyricsManager: LyricsManager;
     public voiceStates: VoiceStateManager;
     public players: Map<string, SuwakuPlayer>;
 
     public init(): Promise<void>;
-    public play(options: PlayOptions): Promise<SuwakuTrack>;
-    public search(query: string, options?: SearchOptions): Promise<SuwakuTrack[]>;
-    public searchByMood(mood: string, options?: SearchOptions): Promise<SuwakuTrack[]>;
+    public play(options: PlayOptions): Promise<SuwakuTrack | any>;
+    public search(query: string, options?: SearchOptions): Promise<SearchResult>;
+    public searchByMood(mood: string, options?: SearchOptions): Promise<SearchResult>;
     public getPlayer(guildId: string): SuwakuPlayer | undefined;
     public createPlayer(options: PlayerOptions): SuwakuPlayer;
     public destroyPlayer(guildId: string): Promise<boolean>;
@@ -66,10 +117,17 @@ export class SuwakuClient extends EventEmitter {
     public on(event: 'ready', listener: () => void): this;
     public on(event: 'nodeConnect', listener: (node: LavalinkNode) => void): this;
     public on(event: 'nodeDisconnect', listener: (node: LavalinkNode, data: any) => void): this;
+    public on(event: 'nodeError', listener: (node: LavalinkNode, error: Error) => void): this;
     public on(event: 'trackStart', listener: (player: SuwakuPlayer, track: SuwakuTrack) => void): this;
     public on(event: 'trackEnd', listener: (player: SuwakuPlayer, track: SuwakuTrack, reason: string) => void): this;
+    public on(event: 'trackStuck', listener: (player: SuwakuPlayer, track: SuwakuTrack, thresholdMs: number) => void): this;
+    public on(event: 'trackError', listener: (player: SuwakuPlayer, track: SuwakuTrack, error: any) => void): this;
     public on(event: 'queueEnd', listener: (player: SuwakuPlayer) => void): this;
+    public on(event: 'playerMove', listener: (player: SuwakuPlayer, oldChannel: string, newChannel: string) => void): this;
+    public on(event: 'playerDisconnect', listener: (player: SuwakuPlayer, oldChannel: string) => void): this;
     public on(event: 'error', listener: (error: Error) => void): this;
+    public on(event: 'debug', listener: (message: string) => void): this;
+    public on(event: 'warn', listener: (message: string) => void): this;
 }
 
 // ===== Player =====
@@ -79,6 +137,9 @@ export interface PlayerOptions {
     voiceChannelId: string;
     textChannelId?: string;
     node?: LavalinkNode;
+    autoplayPlatform?: string[];
+    autoResume?: boolean;
+    sponsorBlockCategories?: SponsorBlockCategory[];
 }
 
 export class SuwakuPlayer extends EventEmitter {
@@ -96,10 +157,10 @@ export class SuwakuPlayer extends EventEmitter {
     public paused: boolean;
     public volume: number;
     public position: number;
-    public autoplay: boolean;
     public readonly playing: boolean;
     public readonly current: SuwakuTrack | null;
     public readonly loop: string;
+    public options: PlayerOptions;
 
     // Basic playback control
     public connect(): Promise<void>;
@@ -114,9 +175,14 @@ export class SuwakuPlayer extends EventEmitter {
     public setLoop(mode: 'off' | 'track' | 'queue'): void;
     public setVoiceChannel(channelId: string): void;
     public setTextChannel(channelId: string): void;
-    
+
     // Advanced playback control
     public replay(): Promise<boolean>;
+    public restart(): Promise<boolean>;
+    public moveNode(node: LavalinkNode): Promise<boolean>;
+    public setSponsorBlock(categories: SponsorBlockCategory[]): Promise<boolean>;
+    public disableSponsorBlock(): Promise<boolean>;
+    public autoplay(track?: SuwakuTrack): Promise<boolean>;
     public seekForward(amount?: number): Promise<boolean>;
     public seekBackward(amount?: number): Promise<boolean>;
     public back(): Promise<boolean>;
@@ -124,7 +190,7 @@ export class SuwakuPlayer extends EventEmitter {
     public getCurrentPosition(): number;
     public getRemainingTime(): number;
     public getTotalQueueDuration(): number;
-    
+
     // Queue management
     public shuffleQueue(): SuwakuTrack[];
     public removeDuplicates(): number;
@@ -133,17 +199,15 @@ export class SuwakuPlayer extends EventEmitter {
     public clearQueue(): SuwakuTrack[];
     public addTrack(track: SuwakuTrack): number;
     public addTracks(tracks: SuwakuTrack[]): number;
-    
+
     // History
     public getHistory(limit?: number): SuwakuTrack[];
     public clearHistory(): void;
-    
+
     // Statistics
     public getStats(): PlayerDetailedStats;
-    
-    // Autoplay
-    public setAutoplay(enabled: boolean): void;
-    
+    public healthCheck(): any;
+
     // Lifecycle
     public destroy(): Promise<void>;
     public getInfo(): PlayerInfo;
@@ -200,7 +264,8 @@ export class SuwakuQueue {
     public shift(): SuwakuTrack | null;
     public back(): SuwakuTrack | null;
     public setLoop(mode: 'off' | 'track' | 'queue'): void;
-    
+    public destroy(): void;
+
     // Advanced operations
     public removeDuplicates(): number;
     public removeBy(predicate: (track: SuwakuTrack) => boolean): SuwakuTrack[];
@@ -216,7 +281,7 @@ export class SuwakuQueue {
     public indexOf(predicate: ((track: SuwakuTrack) => boolean) | string): number;
     public swap(index1: number, index2: number): SuwakuTrack[];
     public sort(property: 'title' | 'author' | 'duration' | 'addedAt', ascending?: boolean): SuwakuTrack[];
-    
+
     // Iteration
     public filter(predicate: (track: SuwakuTrack) => boolean): SuwakuTrack[];
     public find(predicate: (track: SuwakuTrack) => boolean): SuwakuTrack | undefined;
@@ -287,6 +352,24 @@ export interface SearchOptions {
     requester?: any;
 }
 
+export interface SearchResult {
+    loadType: 'track' | 'playlist' | 'search' | 'empty' | 'error';
+    tracks: SuwakuTrack[];
+    playlistInfo?: {
+        name: string;
+        selectedTrack: number;
+        url: string | null;
+        trackCount: number;
+        duration: number;
+    };
+    albums?: any[];
+    artists?: any[];
+    playlists?: any[];
+    texts?: any[];
+    pluginInfo?: any;
+    exception?: any;
+}
+
 export class SearchManager {
     constructor(client: SuwakuClient);
 
@@ -294,10 +377,10 @@ export class SearchManager {
     public cache: Map<string, any>;
     public cacheTTL: number;
 
-    public search(query: string, options?: SearchOptions): Promise<SuwakuTrack[]>;
-    public searchYouTube(query: string, options?: SearchOptions): Promise<SuwakuTrack[]>;
-    public searchSoundCloud(query: string, options?: SearchOptions): Promise<SuwakuTrack[]>;
-    public loadPlaylist(url: string, options?: any): Promise<PlaylistData>;
+    public search(query: string, options?: SearchOptions): Promise<SearchResult>;
+    public searchYouTube(query: string, options?: SearchOptions): Promise<SearchResult>;
+    public searchSoundCloud(query: string, options?: SearchOptions): Promise<SearchResult>;
+    public loadPlaylist(url: string, options?: any): Promise<SearchResult>;
     public detectSource(url: string): string | null;
     public clearCache(): void;
     public getCacheStats(): CacheStats;
@@ -319,41 +402,38 @@ export class FilterManager {
     public setTremolo(options?: TremoloOptions): Promise<boolean>;
     public setVibrato(options?: VibratoOptions): Promise<boolean>;
     public setRotation(rotationHz?: number): Promise<boolean>;
-    
+
     // Custom filters
     public setEqualizer(bands: EqualizerBand[]): Promise<boolean>;
     public setTimescale(options: TimescaleOptions): Promise<boolean>;
     public setDistortion(options?: DistortionOptions): Promise<boolean>;
     public setChannelMix(options?: ChannelMixOptions): Promise<boolean>;
     public setLowPass(smoothing?: number): Promise<boolean>;
-    
+
     // Filter management
     public setFilters(filters: FilterData): Promise<boolean>;
     public removeFilter(filterName: string): Promise<boolean>;
     public clearFilters(): Promise<boolean>;
     public getActiveFilters(): FilterData;
     public hasFilter(filterName: string): boolean;
-    
+
     // Static
     public static getPresets(): string[];
 }
 
-export const FilterPresets: {
-    BASSBOOST_LOW: any;
-    BASSBOOST_MEDIUM: any;
-    BASSBOOST_HIGH: any;
-    NIGHTCORE: any;
-    VAPORWAVE: any;
-    EIGHTD: any;
-    KARAOKE: any;
-    TREMOLO: any;
-    VIBRATO: any;
-    SOFT: any;
-    POP: any;
-    ROCK: any;
-    ELECTRONIC: any;
-    CLASSICAL: any;
-};
+export class StatsManager {
+    constructor(client: SuwakuClient);
+    public readonly client: SuwakuClient;
+    public getStats(): ClientStats;
+}
+
+export class LyricsManager {
+    constructor(client: SuwakuClient);
+    public readonly client: SuwakuClient;
+    public cache: Map<string, any>;
+    public get(title: string, author?: string, player?: SuwakuPlayer): Promise<string | any | null>;
+    public search(query: string): Promise<any | null>;
+}
 
 export class NodeManager extends EventEmitter {
     constructor(client: SuwakuClient);
@@ -371,7 +451,7 @@ export class NodeManager extends EventEmitter {
     public getConnected(): LavalinkNode[];
     public getLeastUsed(): LavalinkNode | null;
     public getRandom(): LavalinkNode | null;
-    public getBest(): LavalinkNode | null;
+    public getBest(excludeId?: string): LavalinkNode | null;
     public getByRegion(region: string): LavalinkNode | null;
     public connectAll(): void;
     public disconnectAll(): void;
@@ -393,17 +473,23 @@ export class LavalinkNode extends EventEmitter {
     public ws: any;
     public connected: boolean;
     public reconnectAttempts: number;
-    public calls: number;
     public stats: any;
-    public reconnectTimeout: any;
     public rest: LavalinkREST;
     public sessionId: string | null;
     public readonly url: string;
+    public ping: number;
 
     public connect(): void;
     public disconnect(code?: number, reason?: string): void;
     public send(payload: any): boolean;
-    public getInfo(): NodeInfo;
+    public getHealth(): any;
+    public getInfo(): Promise<any>;
+}
+
+export interface RESTRequestOptions {
+    method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
+    data?: any;
+    retries?: number;
 }
 
 export class LavalinkREST {
@@ -413,6 +499,7 @@ export class LavalinkREST {
     public readonly baseURL: string;
     public readonly headers: any;
 
+    public doRequest(endpoint: string, options?: RESTRequestOptions): Promise<any>;
     public loadTracks(identifier: string): Promise<any>;
     public updatePlayer(guildId: string, data: any, noReplace?: boolean): Promise<any>;
     public destroyPlayer(guildId: string): Promise<void>;
@@ -424,6 +511,7 @@ export class LavalinkREST {
     public getVersion(): Promise<string>;
     public decodeTrack(track: string): Promise<any>;
     public decodeTracks(tracks: string[]): Promise<any[]>;
+    public getLyrics(track: string): Promise<any>;
 }
 
 export class VoiceStateManager extends EventEmitter {
@@ -460,20 +548,7 @@ export interface PlayerStats {
 export interface NodeStats {
     identifier: string;
     connected: boolean;
-    calls: number;
-    reconnectAttempts: number;
     stats: any;
-}
-
-export interface NodeInfo {
-    identifier: string;
-    host: string;
-    port: number;
-    secure: boolean;
-    connected: boolean;
-    calls: number;
-    stats: any;
-    reconnectAttempts: number;
 }
 
 export interface PlaylistData {

@@ -12,10 +12,21 @@ import { SearchManager } from './managers/SearchManager.js';
 import { FilterManager, FilterPresets } from './managers/FilterManager.js';
 import { NodeManager } from './lavalink/NodeManager.js';
 import { LavalinkNode } from './lavalink/LavalinkNode.js';
+import Structure from './structures/Structure.js';
 import { LavalinkREST } from './lavalink/LavalinkREST.js';
+import { PersistenceManager } from './persistence/PersistenceManager.js';
+import { StorageAdapter } from './persistence/StorageAdapter.js';
+import { MemoryStorageAdapter } from './persistence/MemoryStorageAdapter.js';
+import { JSONStorageAdapter } from './persistence/JSONStorageAdapter.js';
 import { YoutubeThumbnailSize, PlayerMovedState } from './utils/constants.js';
 import packageJson from '../package.json' with { type: 'json' };
 const { version } = packageJson;
+
+// Register default structures globally
+Structure.structures.Player = SuwakuPlayer;
+Structure.structures.Queue = SuwakuQueue;
+Structure.structures.Track = SuwakuTrack;
+Structure.structures.Node = LavalinkNode;
 
 // Export main classes
 export {
@@ -26,6 +37,7 @@ export {
     SuwakuPlayer,
     SuwakuQueue,
     SuwakuTrack,
+    Structure,
 
     // Managers
     PlayerManager,
@@ -41,6 +53,12 @@ export {
     FilterPresets,
     YoutubeThumbnailSize,
     PlayerMovedState,
+
+    // Persistence
+    PersistenceManager,
+    StorageAdapter,
+    MemoryStorageAdapter,
+    JSONStorageAdapter,
 
     // Version
     version

@@ -3,7 +3,8 @@
  * @module managers/SearchManager
  */
 
-import { SuwakuTrack } from '../structures/SuwakuTrack.js';
+import axios from 'axios';
+import Structure from '../structures/Structure.js';
 import { SearchPrefix, TrackSource } from '../utils/constants.js';
 import { validateNonEmptyString } from '../utils/validators.js';
 
@@ -32,8 +33,7 @@ class SearchManager {
 
   /**
    * Search for tracks by mood/vibe (Suwaku Exclusive Innovation)
-   * Maps abstract moods to specific search keywords and audio profiles
-   * @param {string} mood - The mood (e.g., 'happy', 'sad', 'lofi', 'workout')
+   * @param {string} mood - The mood (e.g., 'happy', 'sad', 'lofi')
    * @param {Object} [options] - Search options
    * @returns {Promise<Object>} Search result
    */
@@ -52,12 +52,9 @@ class SearchManager {
     };
 
     const moodData = moodMap[mood.toLowerCase()] || { keywords: mood, preset: null };
-    
     this.client.emit('debug', `Mood search for: ${mood} using keywords: ${moodData.keywords}`);
 
     const results = await this.search(moodData.keywords, options);
-
-    // Attach suggested preset to results so the bot can apply it
     if (results && moodData.preset) {
       results.suggestedPreset = moodData.preset;
     }
@@ -66,598 +63,183 @@ class SearchManager {
   }
 
   /**
-   * Search for tracks with fallback support
+   * Search for tracks (Standard Shoukaku/Kazagumo Style)
    * @param {string} query - Search query or URL
    * @param {Object} [options] - Search options
-   * @param {string} [options.source] - Primary search source (youtube, soundcloud, spotify, etc)
-   * @param {string} [options.engine] - Search engine (youtube, youtube_music, soundcloud)
+   * @param {string} [options.source] - Search source (youtube, spotify, etc)
    * @param {string} [options.node] - Preferred node identifier
-   * @param {Array<string>} [options.fallbackSources] - Fallback sources to try if primary fails
-   * @param {number} [options.limit=10] - Maximum results
    * @param {Object} [options.requester] - User who requested
-   * @returns {Promise<Object>} Search result object with type, tracks, and optional playlistName
+   * @returns {Promise<Object>} Search result object
    */
   async search(query, options = {}) {
     validateNonEmptyString(query, 'Search query');
 
+    // 1. Cache Check
+    const cacheKey = `${query}:${options.source || 'default'}`;
+    if (this.cache.has(cacheKey)) {
+      const cached = this.cache.get(cacheKey);
+      if (Date.now() - cached.timestamp < this.cacheTTL) {
+        this.client.emit('debug', `Search Cache Hit: ${query}`);
+        return cached.data;
+      }
+      this.cache.delete(cacheKey);
+    }
+
+    // 2. Identification & Universal Resolver
     const isURL = this._isURL(query);
-    const hasPrefix = ['ytsearch:', 'ytmsearch:', 'scsearch:', 'spsearch:', 'dzsearch:', 'amsearch:'].some(p => query.startsWith(p));
-    const searchSource = options.source || this.client.options.searchEngine || 'spotify';
-    const playbackEngine = options.engine || this.client.options.playbackEngine || 'youtubemusic';
-    const limit = options.limit || 10;
-    const requester = options.requester;
+    let identifier = isURL ? query : this._getSearchIdentifier(query, options.source);
 
-    this.client.emit('debug', `Search initiating. Mode: ${isURL ? 'URL' : 'Text'}. Search Source: ${searchSource}. Playback Engine: ${playbackEngine}`);
+    // YouTube Mix & Playlist normalization
+    if (isURL && query.includes('youtube.com')) {
+      const url = new URL(query);
+      const list = url.searchParams.get('list');
+      const videoId = url.searchParams.get('v');
 
-    // PHASE 1: IDENTIFICATION
-    // We try to get the track's name and artist first, unless it's a URL or already has a prefix
-    let searchName = query;
-    let originalResult = null;
-    let identified = false;
-
-    if (!isURL && !hasPrefix) {
-      try {
-        const identifier = this._getSearchIdentifier(query, searchSource);
-        const node = this.client.nodes.getLeastUsed();
-        if (!node) throw new Error('No nodes available');
-
-        this.client.emit('debug', `Phase 1: Identifying track via ${searchSource} using ${identifier}`);
-        const result = await node.rest.loadTracks(identifier);
-        
-        if (result && result.loadType !== 'empty' && result.loadType !== 'error') {
-          const parsed = this._parseSearchResult(result, requester);
-          if (parsed.tracks.length > 0) {
-            const firstTrack = parsed.tracks[0];
-            
-            // ADVANCED: Check if identification is reliable
-            const identificationScore = this._calculateSimilarity(query, firstTrack.title);
-            this.client.emit('debug', `Phase 1: Identification similarity score: ${identificationScore.toFixed(2)}`);
-
-            // If identification is very poor (< 0.3), use raw query instead
-            if (identificationScore < 0.3) {
-              this.client.emit('debug', `Phase 1 Warning: Identification score too low, using raw query instead`);
-            } else {
-              searchName = `${firstTrack.title} ${firstTrack.author}`;
-              originalResult = parsed;
-              identified = true;
-              this.client.emit('debug', `Phase 1 Success: Identified as "${searchName}" (Type: ${parsed.type})`);
-            }
-          }
-        }
-      } catch (error) {
-        this.client.emit('debug', `Phase 1 Warning: Identification failed, falling back to raw query. Error: ${error.message}`);
-      }
-    } else {
-      this.client.emit('debug', `Phase 1: Skipping identification for ${isURL ? 'URL' : 'prefixed query'}`);
-    }
-
-    // PHASE 2: RESOLUTION (The actual playback engine search)
-    // If we identified a name, or if the input was text/prefixed, we search on the playback engine
-    if (identified || !isURL) {
-      try {
-        const node = this.client.nodes.getLeastUsed();
-        
-        // AQUAlink Feature: Use ISRC for more precise matching if available
-        let playbackIdentifier;
-        const firstTrack = originalResult?.tracks[0];
-        
-        if (firstTrack?.isrc && (playbackEngine === 'youtubemusic' || playbackEngine === 'youtube')) {
-          this.client.emit('debug', `Phase 2: Using ISRC "${firstTrack.isrc}" for precise resolution on ${playbackEngine}`);
-          playbackIdentifier = firstTrack.isrc; // Some Lavalink sources support searching by ISRC directly
-        } else {
-          playbackIdentifier = this._getSearchIdentifier(searchName, playbackEngine);
-        }
-        
-        this.client.emit('debug', `Phase 2: Resolving for playback via ${playbackEngine} using "${playbackIdentifier}"`);
-        let playbackResult = await node.rest.loadTracks(playbackIdentifier);
-
-        // Fallback if ISRC search failed
-        if ((!playbackResult || playbackResult.loadType === 'empty') && firstTrack?.isrc) {
-          this.client.emit('debug', `Phase 2 Fallback: ISRC search failed, falling back to name search: "${searchName}"`);
-          playbackIdentifier = this._getSearchIdentifier(searchName, playbackEngine);
-          playbackResult = await node.rest.loadTracks(playbackIdentifier);
-        }
-
-        if (playbackResult && playbackResult.loadType !== 'empty' && playbackResult.loadType !== 'error') {
-          const parsed = this._parseSearchResult(playbackResult, requester);
-          
-          if (parsed.tracks.length > 0) {
-            this.client.emit('debug', `Phase 2 Success: Found ${parsed.tracks.length} tracks on ${playbackEngine}`);
-            
-            // If the original was a playlist, we return the original (Spotify/etc) 
-            // because we want the whole playlist metadata, and Lavalink will handle 
-            // the mirroring of each track during playback if configured.
-            if (originalResult && originalResult.type === 'PLAYLIST') {
-               return originalResult;
-            }
-
-            // ADVANCED SEARCH: Robust title matching logic
-            // We want to ensure the top result is the most relevant to what the user actually typed
-            const normalizedQuery = query.toLowerCase().trim();
-            const queryWords = normalizedQuery.split(/\s+/).filter(w => w.length > 1);
-
-            // Sort results by similarity score to the ORIGINAL user query
-            const scoredTracks = parsed.tracks.map(track => {
-              const title = (track.title || '').toLowerCase();
-              const author = (track.author || '').toLowerCase();
-              const fullText = `${title} ${author}`;
-              
-              let score = 0;
-              
-              // 1. Exact title match (absolute highest priority)
-              if (title === normalizedQuery) score += 500;
-              
-              // 2. Exact title + author match (very high priority)
-              if (fullText === normalizedQuery || `${author} ${title}` === normalizedQuery) score += 400;
-
-              // 3. Title contains the exact query
-              if (title.includes(normalizedQuery)) score += 200;
-              
-              // 4. Title starts with query
-              if (title.startsWith(normalizedQuery)) score += 100;
-              
-              // 5. Word matching (Fuzzy)
-              let matchedWords = 0;
-              for (const word of queryWords) {
-                if (fullText.includes(word)) matchedWords++;
-              }
-              const wordMatchRatio = matchedWords / Math.max(queryWords.length, 1);
-              score += wordMatchRatio * 150;
-              
-              // 6. Penalty for "karaoke", "instrumental", "cover", "remix" if not in query
-              const filters = ['karaoke', 'instrumental', 'cover', 'remix', 'parodia', 'paródia', 'clipe oficial', 'official video'];
-              for (const filter of filters) {
-                if (fullText.includes(filter) && !normalizedQuery.includes(filter)) {
-                  score -= 50;
-                }
-              }
-
-              // 7. Small bonus for official content if not specified
-              if ((fullText.includes('official') || fullText.includes('clipe')) && !normalizedQuery.includes('cover')) {
-                score += 10;
-              }
-
-              return { track, score };
-            });
-
-            // Sort by score descending
-            scoredTracks.sort((a, b) => b.score - a.score);
-            
-            const bestResult = scoredTracks[0];
-            this.client.emit('debug', `Advanced Search: Top result score: ${bestResult.score.toFixed(2)} - "${bestResult.track.title}"`);
-
-            // If the best result is still very poor and we have a fallback, maybe we should've tried another engine
-            // But for now, we just return the sorted results
-            return this._buildSearchResult('SEARCH', scoredTracks.map(st => st.track).slice(0, limit));
-          }
-        }
-      } catch (error) {
-        this.client.emit('debug', `Phase 2 Error: Resolution failed. Error: ${error.message}`);
-      }
-    } else if (isURL) {
-      // If it's a URL and we couldn't identify it (Phase 1 failed), 
-      // we try to load it directly as a last resort in Phase 2
-      try {
-        this.client.emit('debug', `Phase 2: Direct load attempt for unidentified URL: ${query}`);
-        const node = this.client.nodes.getLeastUsed();
-        const directResult = await node.rest.loadTracks(query);
-        if (directResult && directResult.loadType !== 'empty' && directResult.loadType !== 'error') {
-          return this._parseSearchResult(directResult, requester);
-        }
-      } catch (error) {
-        this.client.emit('debug', `Phase 2 Error: Direct load failed. Error: ${error.message}`);
+      // If it's a mix or playlist, prioritize the list identifier for Lavalink
+      if (list) {
+        this.client.emit('debug', `YouTube Playlist/Mix detected, cleaning URL...`);
+        identifier = `https://www.youtube.com/playlist?list=${list}`;
       }
     }
 
-    // PHASE 3: FINAL FALLBACK
-    // If everything failed, try to return the original identification result if it exists
-    if (originalResult && originalResult.tracks.length > 0) {
-      this.client.emit('debug', `Phase 3: Returning original identification result as last resort`);
-      return originalResult;
-    }
-
-    this.client.emit('debug', `Search failed: No results found for "${query}"`);
-    return this._buildSearchResult('SEARCH', []);
-  }
-
-  /**
-   * Smart search with fallback across multiple platforms
-   * Searches for the best matching track across different sources
-   * @param {string} query - Search query
-   * @param {Object} [options] - Search options
-   * @param {Object} [options.requester] - User who requested
-   * @param {Array<string>} [options.sources] - Sources to try (in order)
-   * @param {number} [options.similarityThreshold=0.6] - Minimum similarity score (0-1)
-   * @returns {Promise<SuwakuTrack|null>} Best matching track or null
-   */
-  async smartSearch(query, options = {}) {
-    validateNonEmptyString(query, 'Search query');
-
-    // Default sources to try in order
-    const sources = options.sources || ['youtube', 'youtubemusic', 'soundcloud', 'spotify'];
-    const similarityThreshold = options.similarityThreshold || 0.6;
-    const requester = options.requester;
-
-    this.client.emit('debug', `Smart search for: "${query}" across ${sources.length} sources`);
-
-    let bestMatch = null;
-    let bestScore = 0;
-
-    // Try each source
-    for (const source of sources) {
-      try {
-        this.client.emit('debug', `Trying source: ${source}`);
-
-        // Search with limit of 10
-        const result = await this.search(query, {
-          source,
-          limit: 10,
-          requester
-        });
-
-        if (!result || !result.tracks || result.tracks.length === 0) {
-          this.client.emit('debug', `No results from ${source}`);
-          continue;
-        }
-
-        // Find best match in results
-        for (const track of result.tracks) {
-          const score = this._calculateSimilarity(query, track.title);
-
-          this.client.emit('debug', `Track: "${track.title}" - Score: ${score.toFixed(2)}`);
-
-          if (score > bestScore && score >= similarityThreshold) {
-            bestScore = score;
-            bestMatch = track;
-          }
-        }
-
-        // If we found a very good match (>0.8), stop searching
-        if (bestScore > 0.8) {
-          this.client.emit('debug', `Found excellent match (${bestScore.toFixed(2)}): "${bestMatch.title}"`);
-          break;
-        }
-
-      } catch (error) {
-        this.client.emit('debug', `Error searching ${source}: ${error.message}`);
-        continue;
-      }
-    }
-
-    if (bestMatch) {
-      this.client.emit('debug', `Best match found: "${bestMatch.title}" with score ${bestScore.toFixed(2)}`);
-    } else {
-      this.client.emit('debug', `No suitable match found for: "${query}"`);
-    }
-
-    return bestMatch;
-  }
-
-  /**
-   * Autocomplete search for Discord slash commands
-   * @param {string} query - The search query from autocomplete interaction
-   * @param {Object} [options] - Autocomplete options
-   * @param {string} [options.source] - Search source (youtube, spotify, soundcloud, etc)
-   * @param {number} [options.limit=10] - Maximum results to return
-   * @returns {Promise<Array<{name: string, value: string}>>} Array of choices for Discord autocomplete
-   */
-  async autocomplete(query, options = {}) {
-    if (!query || query.trim().length === 0) return [];
-
-    // Use search engine (Spotify) as default for autocomplete
-    const source = options.source || this.client.options.searchEngine || 'spotify';
-    const limit = options.limit || 10;
+    this.client.emit('debug', `Search initiating: "${identifier}"`);
 
     try {
-      const node = this.client.nodes.getLeastUsed();
-      if (!node) return [];
+      const node = options.node ? this.client.nodes.get(options.node) : this.client.nodes.getLeastUsed();
+      if (!node) throw new Error('No available nodes for search');
 
-      const identifier = this._getSearchIdentifier(query, source);
-      this.client.emit('debug', `Autocomplete: Searching via ${source} using ${identifier}`);
-      
-      const result = await node.rest.loadTracks(identifier);
-      if (!result || !result.data) return [];
+      let result = await node.rest.loadTracks(identifier);
+      let parsedResult = this._parseSearchResult(result, options.requester);
 
-      let tracks = [];
-      if (Array.isArray(result.data)) {
-        tracks = result.data;
-      } else if (result.data.tracks && Array.isArray(result.data.tracks)) {
-        tracks = result.data.tracks;
-      } else if (result.data.info) {
-        tracks = [result.data];
+      // --- Universal Smart Resolve Fallback (Suwaku Exclusive) ---
+      // If Lavalink fails to resolve high-tier sources (Spotify/Apple/YT Playlists), Suwaku takes over.
+      if ((parsedResult.loadType === 'empty' || parsedResult.loadType === 'error' || parsedResult.tracks.length === 0) && isURL) {
+        const resolved = await this._smartResolve(query, options.requester);
+        if (resolved) parsedResult = resolved;
       }
 
-      if (tracks.length === 0) return [];
+      // Handle result limit
+      if (options.limit && parsedResult.tracks.length > options.limit) {
+        parsedResult.tracks = parsedResult.tracks.slice(0, options.limit);
+      }
 
-      // IMPROVED: Sort results by similarity to ensure the most relevant ones appear first
-      const normalizedQuery = query.toLowerCase().trim();
-      const queryWords = normalizedQuery.split(/\s+/).filter(w => w.length > 1);
-
-      const scoredTracks = tracks
-        .map(track => {
-          const title = (track.info?.title || '').toLowerCase();
-          const author = (track.info?.author || '').toLowerCase();
-          const fullText = `${title} ${author}`;
-          
-          let score = 0;
-          
-          // 1. Exact title match
-          if (title === normalizedQuery) score += 500;
-          
-          // 2. Exact title + author match
-          if (fullText === normalizedQuery || `${author} ${title}` === normalizedQuery) score += 400;
-
-          // 3. Title contains the exact query
-          if (title.includes(normalizedQuery)) score += 200;
-          
-          // 4. Title starts with query
-          if (title.startsWith(normalizedQuery)) score += 100;
-          
-          // 5. Word matching
-          let matchedWords = 0;
-          for (const word of queryWords) {
-            if (fullText.includes(word)) matchedWords++;
-          }
-          const wordMatchRatio = matchedWords / Math.max(queryWords.length, 1);
-          score += wordMatchRatio * 150;
-          
-          // 6. Penalty for unwanted versions
-          const filters = ['karaoke', 'instrumental', 'cover', 'remix', 'parodia', 'paródia', 'clipe oficial', 'official video'];
-          for (const filter of filters) {
-            if (fullText.includes(filter) && !normalizedQuery.includes(filter)) {
-              score -= 50;
-            }
-          }
-
-          return { track, score };
-        })
-        .sort((a, b) => b.score - a.score)
-        .map(item => item.track);
-
-      // Map tracks to Discord autocomplete choices (name: title, value: name)
-      return scoredTracks
-        .filter(track => track && track.info)
-        .map(track => {
-          const name = `${track.info.title} - ${track.info.author}`.slice(0, 100);
-          return {
-            name,
-            value: name // Use name as value so engine searches by name
-          };
-        })
-        .slice(0, 25);
+      // 3. Cache and Return
+      this.cache.set(cacheKey, { data: parsedResult, timestamp: Date.now() });
+      return parsedResult;
     } catch (error) {
-      this.client.emit('debug', `Autocomplete error for "${query}": ${error.message}`);
-      return [];
+      this.client.emit('debug', `Search failure for "${query}": ${error.message}`);
+      return this._buildErrorResult(error);
     }
   }
 
   /**
-   * Calculate similarity between query and title
-   * Uses Levenshtein distance and other heuristics
-   * @param {string} query - Search query
-   * @param {string} title - Track title
-   * @returns {number} Similarity score (0-1)
-   * @private
-   */
-  _calculateSimilarity(query, title) {
-    if (!query || !title) return 0;
-
-    // Normalize strings
-    const normalizedQuery = query.toLowerCase().trim();
-    const normalizedTitle = title.toLowerCase().trim();
-
-    // Exact match
-    if (normalizedQuery === normalizedTitle) {
-      return 1.0;
-    }
-
-    // Check if title contains query
-    if (normalizedTitle.includes(normalizedQuery)) {
-      return 0.9;
-    }
-
-    // Check if query contains title
-    if (normalizedQuery.includes(normalizedTitle)) {
-      return 0.85;
-    }
-
-    // Calculate Levenshtein distance
-    const distance = this._levenshteinDistance(normalizedQuery, normalizedTitle);
-    const maxLength = Math.max(normalizedQuery.length, normalizedTitle.length);
-    const similarity = 1 - (distance / maxLength);
-
-    // Bonus for matching words
-    const queryWords = normalizedQuery.split(/\s+/);
-    const titleWords = normalizedTitle.split(/\s+/);
-    let matchingWords = 0;
-
-    for (const qWord of queryWords) {
-      if (qWord.length < 3) continue; // Skip short words
-      for (const tWord of titleWords) {
-        if (tWord.includes(qWord) || qWord.includes(tWord)) {
-          matchingWords++;
-          break;
-        }
-      }
-    }
-
-    const wordBonus = (matchingWords / Math.max(queryWords.length, 1)) * 0.2;
-
-    return Math.min(similarity + wordBonus, 1.0);
-  }
-
-  /**
-   * Calculate Levenshtein distance between two strings
-   * @param {string} str1 - First string
-   * @param {string} str2 - Second string
-   * @returns {number} Edit distance
-   * @private
-   */
-  _levenshteinDistance(str1, str2) {
-    const matrix = [];
-
-    for (let i = 0; i <= str2.length; i++) {
-      matrix[i] = [i];
-    }
-
-    for (let j = 0; j <= str1.length; j++) {
-      matrix[0][j] = j;
-    }
-
-    for (let i = 1; i <= str2.length; i++) {
-      for (let j = 1; j <= str1.length; j++) {
-        if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
-          matrix[i][j] = matrix[i - 1][j - 1];
-        } else {
-          matrix[i][j] = Math.min(
-            matrix[i - 1][j - 1] + 1, // substitution
-            matrix[i][j - 1] + 1,     // insertion
-            matrix[i - 1][j] + 1      // deletion
-          );
-        }
-      }
-    }
-
-    return matrix[str2.length][str1.length];
-  }
-
-  /**
-   * Search YouTube
-   * @param {string} query - Search query
-   * @param {Object} [options] - Search options
-   * @returns {Promise<Array<SuwakuTrack>>} Search results
+   * Search YouTube specifically
+   * @param {string} query - Query
+   * @param {Object} [options] - Options
+   * @returns {Promise<Object>} Search result
    */
   async searchYouTube(query, options = {}) {
     return this.search(query, { ...options, source: 'youtube' });
   }
 
   /**
-   * Search SoundCloud
-   * @param {string} query - Search query
-   * @param {Object} [options] - Search options
-   * @returns {Promise<Array<SuwakuTrack>>} Search results
+   * Search Spotify specifically
+   * @param {string} query - Query
+   * @param {Object} [options] - Options
+   * @returns {Promise<Object>} Search result
+   */
+  async searchSpotify(query, options = {}) {
+    return this.search(query, { ...options, source: 'spotify' });
+  }
+
+  /**
+   * Search SoundCloud specifically
+   * @param {string} query - Query
+   * @param {Object} [options] - Options
+   * @returns {Promise<Object>} Search result
    */
   async searchSoundCloud(query, options = {}) {
     return this.search(query, { ...options, source: 'soundcloud' });
   }
 
   /**
-   * Load a playlist
-   * @param {string} url - Playlist URL
-   * @param {Object} [options] - Load options
-   * @returns {Promise<Object>} Playlist data with tracks
+   * Parse Lavalink v4 result into Suwaku format
+   * @private
    */
-  async loadPlaylist(url, options = {}) {
-    validateNonEmptyString(url, 'Playlist URL');
+  _parseSearchResult(result, requester) {
+    const { loadType, data } = result;
 
-    const node = this.client.nodes.getLeastUsed();
-    if (!node) {
-      throw new Error('No available nodes for playlist loading');
+    let tracks = [];
+    let playlistInfo = null;
+    let exception = null;
+
+    const Track = Structure.get('Track');
+
+    switch (loadType) {
+      case 'track':
+      case 'short':
+        tracks = [new Track(data, requester)];
+        break;
+      case 'playlist':
+        tracks = (data.tracks || []).map(t => new Track(t, requester));
+        playlistInfo = {
+          name: data.info?.name || 'Unknown Playlist',
+          selectedTrack: data.info?.selectedTrack || 0,
+          url: tracks[0]?.url || null,
+          trackCount: tracks.length,
+          duration: tracks.reduce((acc, track) => acc + (track.duration || 0), 0)
+        };
+        break;
+      case 'search':
+        // LavaSearch Support
+        if (result.albums || result.artists || result.playlists || result.texts) {
+          return {
+            loadType: 'search',
+            tracks: (result.tracks || []).map(t => new Track(t, requester)),
+            albums: result.albums || [],
+            artists: result.artists || [],
+            playlists: result.playlists || [],
+            texts: result.texts || [],
+            pluginInfo: result.plugin || {}
+          };
+        }
+        tracks = (data || []).map(t => new Track(t, requester));
+        break;
+      case 'error':
+        exception = data;
+        break;
+      case 'empty':
+      default:
+        break;
     }
-
-    const result = await node.rest.loadTracks(url);
-
-    if (result.loadType !== 'playlist') {
-      throw new Error('URL is not a playlist');
-    }
-
-    const tracks = this._parseSearchResult(result, options.requester);
 
     return {
-      name: result.data?.info?.name || 'Unknown Playlist',
+      loadType,
       tracks,
-      selectedTrack: result.data?.info?.selectedTrack || 0
+      playlistInfo,
+      exception
     };
   }
 
   /**
-   * Detect source from URL
-   * @param {string} url - URL to check
-   * @returns {string|null} Detected source or null
-   */
-  detectSource(url) {
-    if (!this._isURL(url)) return null;
-
-    try {
-      const urlObj = new URL(url);
-      const hostname = urlObj.hostname.toLowerCase();
-
-      if (hostname.includes('youtube.com') || hostname.includes('youtu.be')) {
-        return TrackSource.YOUTUBE;
-      }
-      if (hostname.includes('soundcloud.com')) {
-        return TrackSource.SOUNDCLOUD;
-      }
-      if (hostname.includes('spotify.com')) {
-        return TrackSource.SPOTIFY;
-      }
-
-      return TrackSource.HTTP;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Get search identifier with prefix
-   * @param {string} query - Search query
-   * @param {string} source - Search source
-   * @returns {string} Search identifier
+   * Build an error result object
    * @private
    */
-  _getSearchIdentifier(query, source) {
-    // If the query already has a prefix, return it as-is
-    const prefixes = ['ytsearch:', 'ytmsearch:', 'scsearch:', 'spsearch:', 'dzsearch:', 'amsearch:'];
-    if (prefixes.some(p => query.startsWith(p))) {
-      return query;
-    }
-
-    let prefix = SearchPrefix.YOUTUBE;
-
-    switch (source.toLowerCase()) {
-      case 'soundcloud':
-      case 'sc':
-        prefix = SearchPrefix.SOUNDCLOUD;
-        break;
-      case 'youtubemusic':
-      case 'ytmusic':
-      case 'ytm':
-        prefix = SearchPrefix.YOUTUBE_MUSIC;
-        break;
-      case 'spotify':
-      case 'sp':
-        prefix = SearchPrefix.SPOTIFY;
-        break;
-      case 'deezer':
-      case 'dz':
-        prefix = SearchPrefix.DEEZER;
-        break;
-      case 'applemusic':
-      case 'apple':
-      case 'am':
-        prefix = SearchPrefix.APPLE_MUSIC;
-        break;
-      case 'youtube':
-      case 'yt':
-        prefix = SearchPrefix.YOUTUBE;
-        break;
-      default:
-        // Default to the provided source if it matches a prefix, or use youtube as fallback
-        if (SearchPrefix[source.toUpperCase()]) {
-          prefix = SearchPrefix[source.toUpperCase()];
-        } else {
-          prefix = SearchPrefix.YOUTUBE;
-        }
-        break;
-    }
-
-    return `${prefix}:${query}`;
+  _buildErrorResult(error) {
+    return {
+      loadType: 'error',
+      tracks: [],
+      playlistInfo: null,
+      exception: {
+        message: error.message,
+        severity: 'COMMON',
+        cause: error.stack
+      }
+    };
   }
 
   /**
-   * Check if string is a URL
-   * @param {string} str - String to check
-   * @returns {boolean} Whether string is a URL
+   * Helper to detect URLs
    * @private
    */
   _isURL(str) {
@@ -670,65 +252,84 @@ class SearchManager {
   }
 
   /**
-   * Detect source from URL
-   * @param {string} url - URL to check
-   * @returns {string|null} Detected source name
+   * Get search identifier with appropriate prefix
    * @private
    */
-  _detectSourceFromURL(url) {
+  _getSearchIdentifier(query, source) {
+    const prefixes = ['ytsearch:', 'ytmsearch:', 'scsearch:', 'spsearch:', 'dzsearch:', 'amsearch:'];
+    if (prefixes.some(p => query.startsWith(p))) return query;
+
+    const sourceEngine = source || this.client.options.searchEngine || 'youtube';
+    let prefix = SearchPrefix.YOUTUBE;
+
+    switch (sourceEngine.toLowerCase()) {
+      case 'youtube': case 'yt': prefix = SearchPrefix.YOUTUBE; break;
+      case 'youtubemusic': case 'ytm': prefix = SearchPrefix.YOUTUBE_MUSIC; break;
+      case 'soundcloud': case 'sc': prefix = SearchPrefix.SOUNDCLOUD; break;
+      case 'spotify': case 'sp': prefix = SearchPrefix.SPOTIFY; break;
+      case 'deezer': case 'dz': prefix = SearchPrefix.DEEZER; break;
+      case 'applemusic': case 'am': prefix = SearchPrefix.APPLE_MUSIC; break;
+    }
+
+    return `${prefix}:${query}`;
+  }
+
+  /**
+   * Autocomplete search for Discord (simplified)
+   */
+  async autocomplete(query, options = {}) {
+    if (!query || query.trim().length === 0) return [];
+
+    const results = await this.search(query, { ...options, limit: 10 });
+    if (!results || !results.tracks) return [];
+
+    return results.tracks.map(track => ({
+      name: `${track.title} - ${track.author}`.slice(0, 100),
+      value: track.url || track.title
+    })).slice(0, 25);
+  }
+
+  /**
+   * Check if a URL should trigger Smart Resolve
+   * @private
+   */
+  _needsSmartResolve(url) {
+    return /spotify\.com|apple\.com|deezer\.com|soundcloud\.com|youtube\.com\/playlist|tidal\.com/.test(url);
+  }
+
+  /**
+   * Universal Smart Resolve (Suwaku Exclusive)
+   * Converts restricted/plugin-only links into SuwakuTracks via external metadata
+   * @private
+   */
+  async _smartResolve(url, requester) {
+    if (url.includes('spotify.com')) return this._resolveSpotify(url, requester);
+    if (url.includes('soundcloud.com')) return this._resolveSoundCloud(url, requester);
+    if (url.includes('youtube.com/playlist')) return this._resolveYouTubePlaylist(url, requester);
+    if (url.includes('deezer.com')) return this._resolveDeezer(url, requester);
+    if (url.includes('apple.com')) return this._resolveAppleMusic(url, requester);
+    if (url.includes('tidal.com')) return this._resolveTidal(url, requester);
+    return null;
+  }
+
+  /**
+   * Resolve YouTube Playlists (Force Playlist loading)
+   * @private
+   */
+  async _resolveYouTubePlaylist(url, requester) {
     try {
-      const lowerUrl = url.toLowerCase();
+      this.client.emit('debug', `Smart Resolve: Re-attempting YouTube Playlist load for: ${url}`);
+      // If direct load failed, try to simplify the URL to just the list ID
+      const listId = url.includes('list=') ? url.split('list=')[1].split('&')[0] : null;
+      if (!listId) return null;
 
-      // YouTube (including playlists)
-      if (lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be') || lowerUrl.startsWith('yt:')) {
-        // Check if it's YouTube Music
-        if (lowerUrl.includes('music.youtube.com')) {
-          return 'youtubemusic';
-        }
-        return 'youtube';
-      }
+      const cleanUrl = `https://www.youtube.com/playlist?list=${listId}`;
+      const node = this.client.nodes.getLeastUsed();
+      const result = await node.rest.loadTracks(cleanUrl);
 
-      // SoundCloud (including playlists and sets)
-      if (lowerUrl.includes('soundcloud.com') || lowerUrl.startsWith('sc:') || lowerUrl.startsWith('scsearch:')) {
-        return 'soundcloud';
-      }
+      const parsed = this._parseSearchResult(result, requester);
+      if (parsed.tracks.length > 0) return parsed;
 
-      // Spotify (tracks, albums, playlists)
-      if (lowerUrl.includes('spotify.com') || lowerUrl.startsWith('spotify:') || lowerUrl.startsWith('spsearch:')) {
-        return 'spotify';
-      }
-
-      // Deezer (tracks, albums, playlists)
-      if (lowerUrl.includes('deezer.com') || lowerUrl.startsWith('dz:') || lowerUrl.startsWith('dzsearch:')) {
-        return 'deezer';
-      }
-
-      // Apple Music (tracks, albums, playlists)
-      if (lowerUrl.includes('music.apple.com') || lowerUrl.startsWith('am:') || lowerUrl.startsWith('amsearch:')) {
-        return 'applemusic';
-      }
-
-      // Tidal
-      if (lowerUrl.includes('tidal.com')) {
-        return 'tidal';
-      }
-
-      // Bandcamp
-      if (lowerUrl.includes('bandcamp.com')) {
-        return 'bandcamp';
-      }
-
-      // Twitch
-      if (lowerUrl.includes('twitch.tv')) {
-        return 'twitch';
-      }
-
-      // Vimeo
-      if (lowerUrl.includes('vimeo.com')) {
-        return 'vimeo';
-      }
-
-      // For direct URLs (mp3, ogg, etc), return null to use URL as-is
       return null;
     } catch {
       return null;
@@ -736,279 +337,382 @@ class SearchManager {
   }
 
   /**
-   * Parse Lavalink search result
-   * @param {Object} result - Lavalink result
-   * @param {Object} [requester] - User who requested
-   * @returns {Object} Parsed result with type, tracks, and optional playlistName
+   * Resolve SoundCloud Sets (Smart Resolution)
    * @private
    */
-  _parseSearchResult(result, requester) {
-    if (!result || result.loadType === 'empty' || result.loadType === 'error') {
-      this.client.emit('debug', `Search returned no results: ${result?.loadType || 'no result'}`);
-      return { type: 'SEARCH', tracks: [] };
+  async _resolveSoundCloud(url, requester) {
+    try {
+      this.client.emit('debug', `Smart Resolve: SoundCloud extraction for: ${url}`);
+      const node = this.client.nodes.getLeastUsed();
+
+      // Lavalink handles SoundCloud naturally if configured, but let's check
+      const result = await node.rest.loadTracks(url);
+      const parsed = this._parseSearchResult(result, requester);
+
+      if (parsed.loadType === 'playlist' || (parsed.tracks && parsed.tracks.length > 0)) {
+        return parsed;
+      }
+
+      // If Lavalink fails (e.g. rate limit or geo-block), use oEmbed to get the title
+      this.client.emit('debug', `Smart Resolve: Lavalink failed for SoundCloud, trying oEmbed fallback...`);
+      const oembedUrl = `https://soundcloud.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+      const { data: metadata } = await axios.get(oembedUrl);
+
+      if (metadata.title) {
+        this.client.emit('debug', `Smart Resolve: Found SoundCloud title "${metadata.title}", searching...`);
+        // If it's a playlist (set), oEmbed title might contain "Sets" or similar
+        // We search it on YouTube Music as the ultimate fallback
+        return this.search(metadata.title, { requester, source: 'youtubemusic' });
+      }
+
+      return this._resolveGenericMetadata(url, requester);
+    } catch (error) {
+      this.client.emit('debug', `Smart Resolve SoundCloud Warning: ${error.message}`);
+      return this._resolveGenericMetadata(url, requester);
     }
-
-    let tracks = [];
-    let type = 'SEARCH';
-    let playlistName = undefined;
-
-    this.client.emit('debug', `Parsing search result with loadType: ${result.loadType}`);
-
-    switch (result.loadType) {
-      case 'track':
-        type = 'TRACK';
-        tracks = [result.data];
-        break;
-      case 'search':
-        type = 'SEARCH';
-        tracks = result.data || [];
-        break;
-      case 'playlist':
-        type = 'PLAYLIST';
-        tracks = result.data?.tracks || [];
-        playlistName = result.data?.info?.name || 'Unknown Playlist';
-        break;
-      default:
-        this.client.emit('debug', `Unknown loadType: ${result.loadType}`);
-        type = 'SEARCH';
-        tracks = [];
-    }
-
-    const parsedTracks = tracks
-      .filter(track => track && track.info) // Filter out null/invalid tracks
-      .map(track => new SuwakuTrack(track, requester));
-
-    return {
-      type,
-      tracks: parsedTracks,
-      playlistName
-    };
   }
 
   /**
-   * Build search result object
-   * @param {string} type - Result type (TRACK, PLAYLIST, SEARCH)
-   * @param {Array<SuwakuTrack>} tracks - Tracks array
-   * @param {string} [playlistName] - Playlist name (if applicable)
-   * @returns {Object} Search result object
+   * Resolve Deezer Playlists/Albums (Smart Resolution)
    * @private
    */
-  _buildSearchResult(type, tracks, playlistName) {
-    return {
-      type,
-      tracks,
-      playlistName
-    };
+  async _resolveDeezer(url, requester) {
+    try {
+      const type = url.includes('/playlist/') ? 'playlist' : url.includes('/album/') ? 'album' : 'track';
+      const id = url.split('/').pop()?.split('?')[0];
+
+      this.client.emit('debug', `Smart Resolve: Fetching Deezer ${type} data for ID: ${id}`);
+
+      const apiUrl = `https://api.deezer.com/${type}/${id}`;
+      const { data: result } = await axios.get(apiUrl);
+
+      if (!result || (type !== 'track' && !result.tracks)) return null;
+
+      const playlistName = result.title || result.name || 'Deezer Content';
+      const rawTracks = type === 'track' ? [result] : result.tracks.data;
+
+      this.client.emit('debug', `Smart Resolve: Found ${rawTracks.length} tracks in Deezer ${type}`);
+
+      const tracks = [];
+      const batchSize = 10;
+
+      for (let i = 0; i < rawTracks.length; i += batchSize) {
+        const chunk = rawTracks.slice(i, i + batchSize);
+        const resolvedChunk = await Promise.all(chunk.map(async (t) => {
+          const query = `${t.title} ${t.artist?.name || ''}`;
+          const res = await this.search(query, { source: 'youtubemusic', limit: 1 });
+          return res.tracks?.[0] || null;
+        }));
+        tracks.push(...resolvedChunk.filter(t => t !== null));
+
+        if (i + batchSize < rawTracks.length) {
+          await new Promise(r => setTimeout(r, 100));
+        }
+      }
+
+      return {
+        loadType: type === 'track' ? 'track' : 'playlist',
+        tracks,
+        playlistInfo: type === 'track' ? null : {
+          name: playlistName,
+          selectedTrack: 0,
+          url: url
+        },
+        exception: null
+      };
+    } catch (error) {
+      this.client.emit('debug', `Smart Resolve Deezer Error: ${error.message}`);
+      return this._resolveGenericMetadata(url, requester);
+    }
   }
 
   /**
-   * Get result from cache
-   * @param {string} key - Cache key
-   * @returns {Array<SuwakuTrack>|null} Cached result or null
+   * Resolve Apple Music Playlists/Albums (Smart Resolution)
    * @private
    */
-  _getFromCache(key) {
-    const cached = this.cache.get(key);
-    if (!cached) return null;
+  async _resolveAppleMusic(url, requester) {
+    try {
+      this.client.emit('debug', `Smart Resolve: Fetching Apple Music metadata for: ${url}`);
 
-    // Check if expired
-    if (Date.now() - cached.timestamp > this.cacheTTL) {
-      this.cache.delete(key);
+      // Apple Music is best resolved via oEmbed for initial metadata
+      const oembedUrl = `https://noembed.com/embed?url=${encodeURIComponent(url)}`;
+      const { data: metadata } = await axios.get(oembedUrl);
+
+      if (!metadata.title) return this._resolveGenericMetadata(url, requester);
+
+      const playlistName = metadata.title;
+      this.client.emit('debug', `Smart Resolve: Found Apple Music title "${playlistName}", attempting scraper...`);
+
+      // We scrape the page for track names if it looks like a playlist/album
+      const { data: html } = await axios.get(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+
+      // Simple regex to find song titles in scripts or meta
+      const trackMatches = [...html.matchAll(/"name":"([^"]+)"/g)];
+      let trackNames = [...new Set(trackMatches.map(m => m[1]))].slice(0, 100);
+
+      // Filter out common UI strings if we accidentally caught them
+      trackNames = trackNames.filter(name =>
+        name.length > 2 &&
+        !['Apple Music', 'iTunes', 'Playlist', 'Album'].includes(name)
+      );
+
+      if (trackNames.length === 0) {
+        return this.search(playlistName, { requester });
+      }
+
+      this.client.emit('debug', `Smart Resolve: Scraped ${trackNames.length} tracks from Apple Music`);
+
+      const tracks = [];
+      const batchSize = 10;
+
+      for (let i = 0; i < trackNames.length; i += batchSize) {
+        const chunk = trackNames.slice(i, i + batchSize);
+        const resolvedChunk = await Promise.all(chunk.map(async (name) => {
+          const res = await this.search(name, { source: 'youtubemusic', limit: 1 });
+          return res.tracks?.[0] || null;
+        }));
+        tracks.push(...resolvedChunk.filter(t => t !== null));
+
+        if (i + batchSize < trackNames.length) {
+          await new Promise(r => setTimeout(r, 100));
+        }
+      }
+
+      return {
+        loadType: trackNames.length === 1 ? 'track' : 'playlist',
+        tracks,
+        playlistInfo: trackNames.length === 1 ? null : {
+          name: playlistName,
+          selectedTrack: 0,
+          url: url
+        },
+        exception: null
+      };
+
+    } catch (error) {
+      this.client.emit('debug', `Smart Resolve Apple Music Error: ${error.message}`);
+      return this._resolveGenericMetadata(url, requester);
+    }
+  }
+
+  /**
+   * Resolve Apple Music/Deezer/Global (Smart Metadata)
+   * @private
+   */
+  async _resolveGenericMetadata(url, requester) {
+    try {
+      this.client.emit('debug', `Smart Resolve: Fetching Global metadata for: ${url}`);
+      // Most services support oEmbed for metadata extraction
+      const oembedUrl = `https://noembed.com/embed?url=${encodeURIComponent(url)}`;
+      const { data: metadata } = await axios.get(oembedUrl);
+
+      if (metadata.title) {
+        this.client.emit('debug', `Smart Resolve: Found title "${metadata.title}", searching...`);
+        return this.search(`${metadata.title} ${metadata.author_name || ''}`, { requester });
+      }
+    } catch {
       return null;
     }
-
-    return cached.tracks;
+    return null;
   }
 
   /**
-   * Add result to cache
-   * @param {string} key - Cache key
-   * @param {Array<SuwakuTrack>} tracks - Tracks to cache
+   * Resolve Tidal Playlists/Albums (Smart Resolution)
    * @private
    */
-  _addToCache(key, tracks) {
-    this.cache.set(key, {
-      tracks,
-      timestamp: Date.now()
-    });
+  async _resolveTidal(url, requester) {
+    try {
+      this.client.emit('debug', `Smart Resolve: Fetching Tidal metadata for: ${url}`);
+      
+      const oembedUrl = `https://noembed.com/embed?url=${encodeURIComponent(url)}`;
+      const { data: metadata } = await axios.get(oembedUrl);
 
-    // Limit cache size
-    if (this.cache.size > 100) {
-      const firstKey = this.cache.keys().next().value;
-      this.cache.delete(firstKey);
-    }
-  }
+      if (!metadata.title) return this._resolveGenericMetadata(url, requester);
 
-  /**
-   * Get best node for a specific source
-   * @param {string} source - Source name
-   * @returns {LavalinkNode|null} Best node or null
-   */
-  getBestNodeForSource(source) {
-    const nodes = this.client.nodes.getConnected();
-    if (nodes.length === 0) return null;
+      const playlistName = metadata.title;
+      this.client.emit('debug', `Smart Resolve: Found Tidal title "${playlistName}", attempting scraper...`);
 
-    // For now, just return least used
-    // In the future, could check node capabilities
-    return this.client.nodes.getLeastUsed();
-  }
+      const { data: html } = await axios.get(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
 
-  /**
-   * Check if a source is supported by any node
-   * @param {string} source - Source name
-   * @returns {boolean} Whether source is supported
-   */
-  isSourceSupported(source) {
-    const nodes = this.client.nodes.getConnected();
-    if (nodes.length === 0) return false;
+      // Regex for Tidal track names in their modern structure
+      const trackMatches = [...html.matchAll(/"name":"([^"]+)"/g)];
+      let trackNames = [...new Set(trackMatches.map(m => m[1]))].slice(0, 100);
 
-    // All Lavalink nodes support basic sources
-    const basicSources = ['youtube', 'youtubemusic', 'soundcloud'];
-    if (basicSources.includes(source.toLowerCase())) {
-      return true;
-    }
+      // Filter out common Tidal UI/Marketing strings
+      trackNames = trackNames.filter(name => 
+        name.length > 2 && 
+        !['TIDAL', 'Playlist', 'Album', 'High Fidelity Music'].includes(name)
+      );
 
-    // For other sources, assume supported if any node is connected
-    // In the future, could check node info/capabilities
-    return nodes.length > 0;
-  }
-
-  /**
-   * Get supported sources
-   * @returns {Array<string>} List of supported sources
-   */
-  getSupportedSources() {
-    return [
-      'youtube',
-      'youtubemusic',
-      'soundcloud',
-      'spotify',
-      'deezer',
-      'applemusic',
-      'http'
-    ];
-  }
-
-  /**
-   * Check if URL is a Spotify URL
-   * @param {string} url - URL to check
-   * @returns {boolean} Whether URL is from Spotify
-   */
-  isSpotifyUrl(url) {
-    return url.includes('spotify.com') || url.startsWith('spotify:');
-  }
-
-  /**
-   * Check if URL is a playlist URL
-   * @param {string} url - URL to check
-   * @returns {boolean} Whether URL is a playlist
-   */
-  isPlaylistUrl(url) {
-    const lowerUrl = url.toLowerCase();
-    return (
-      lowerUrl.includes('/playlist') ||
-      lowerUrl.includes('list=') ||
-      lowerUrl.includes('/sets/') ||  // SoundCloud sets
-      lowerUrl.includes('/album/') ||  // Albums
-      lowerUrl.includes('spotify:playlist:') ||
-      lowerUrl.includes('spotify:album:')
-    );
-  }
-
-  /**
-   * Detect playlist info from URL
-   * @param {string} url - URL to check
-   * @returns {Object|null} Playlist info or null
-   */
-  detectPlaylistInfo(url) {
-    const lowerUrl = url.toLowerCase();
-    const source = this._detectSourceFromURL(url);
-
-    if (!source) return null;
-
-    const info = {
-      source,
-      isPlaylist: false,
-      type: 'track'
-    };
-
-    // YouTube playlist
-    if (source === 'youtube' && lowerUrl.includes('list=')) {
-      info.isPlaylist = true;
-      info.type = 'playlist';
-    }
-
-    // Spotify
-    if (source === 'spotify') {
-      if (lowerUrl.includes('/playlist/') || lowerUrl.includes('spotify:playlist:')) {
-        info.isPlaylist = true;
-        info.type = 'playlist';
-      } else if (lowerUrl.includes('/album/') || lowerUrl.includes('spotify:album:')) {
-        info.isPlaylist = true;
-        info.type = 'album';
+      if (trackNames.length === 0) {
+        return this.search(playlistName, { requester });
       }
-    }
 
-    // SoundCloud sets
-    if (source === 'soundcloud' && lowerUrl.includes('/sets/')) {
-      info.isPlaylist = true;
-      info.type = 'playlist';
-    }
+      this.client.emit('debug', `Smart Resolve: Scraped ${trackNames.length} tracks from Tidal`);
 
-    // Deezer
-    if (source === 'deezer') {
-      if (lowerUrl.includes('/playlist/')) {
-        info.isPlaylist = true;
-        info.type = 'playlist';
-      } else if (lowerUrl.includes('/album/')) {
-        info.isPlaylist = true;
-        info.type = 'album';
+      const tracks = [];
+      const batchSize = 10;
+
+      for (let i = 0; i < trackNames.length; i += batchSize) {
+        const chunk = trackNames.slice(i, i + batchSize);
+        const resolvedChunk = await Promise.all(chunk.map(async (name) => {
+          const res = await this.search(name, { source: 'youtubemusic', limit: 1 });
+          return res.tracks?.[0] || null;
+        }));
+        tracks.push(...resolvedChunk.filter(t => t !== null));
+
+        if (i + batchSize < trackNames.length) {
+          await new Promise(r => setTimeout(r, 100));
+        }
       }
-    }
 
-    // Apple Music
-    if (source === 'applemusic') {
-      if (lowerUrl.includes('/playlist/')) {
-        info.isPlaylist = true;
-        info.type = 'playlist';
-      } else if (lowerUrl.includes('/album/')) {
-        info.isPlaylist = true;
-        info.type = 'album';
+      return {
+        loadType: trackNames.length === 1 ? 'track' : 'playlist',
+        tracks,
+        playlistInfo: trackNames.length === 1 ? null : {
+          name: playlistName,
+          selectedTrack: 0,
+          url: url
+        },
+        exception: null
+      };
+
+    } catch (error) {
+      this.client.emit('debug', `Smart Resolve Tidal Error: ${error.message}`);
+      return this._resolveGenericMetadata(url, requester);
+    }
+  }
+
+  /**
+   * Resolve Spotify metadata and tracks (Smart Resolution - Scraper Engine)
+   * @private
+   */
+  async _resolveSpotify(url, requester) {
+    try {
+      const type = url.split('/')[3];
+      const id = url.split('/')[4]?.split('?')[0];
+
+      this.client.emit('debug', `Smart Resolve: Fetching Spotify ${type} data for ID: ${id}`);
+
+      // Use oEmbed to get basic info
+      const oembedUrl = `https://open.spotify.com/oembed?url=${encodeURIComponent(url)}`;
+      const { data: metadata } = await axios.get(oembedUrl);
+
+      const playlistName = metadata.title || 'Spotify Content';
+
+      // For single tracks, we can easily resolve by searching the title
+      if (type === 'track') {
+        const searchResult = await this.search(`${metadata.title} ${metadata.author_name}`, { requester });
+        return searchResult;
       }
+
+      // For playlists/albums, we need to scrape the embed page to get track list without API keys
+      // This is the "Suwaku Secret Sauce" for plugin-less nodes
+      const embedUrl = `https://open.spotify.com/embed/${type}/${id}`;
+      const { data: html } = await axios.get(embedUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+      });
+
+      // Look for the metadata JSON in different possible script tags
+      const match = html.match(/<script id="(resourceConfig|initial-state|session)" type="text\/json">(.+?)<\/script>/) ||
+        html.match(/<script id="__NEXT_DATA__" type="application\/json">(.+?)<\/script>/);
+
+      if (!match) {
+        this.client.emit('debug', `Smart Resolve: Could not find data script tag in embed for ${id}`);
+        return null;
+      }
+
+      const jsonContent = match[2] || match[1];
+      const state = JSON.parse(jsonContent);
+
+      // Try multiple common paths in Spotify's internal state structure
+      let trackEntries = [];
+      if (state.entities?.items?.[id]?.content?.items) {
+        trackEntries = state.entities.items[id].content.items;
+      } else if (state.data?.entity?.items) {
+        trackEntries = state.data.entity.items;
+      } else if (state.props?.pageProps?.state?.data?.entity?.items) {
+        trackEntries = state.props.pageProps.state.data.entity.items;
+      } else if (state.items) {
+        trackEntries = state.items;
+      }
+
+      const trackData = trackEntries.map(i => i.track || i).filter(t => t && t.name);
+
+      if (trackData.length === 0) {
+        // Last ditch effort: try to find track names in the HTML itself via regex
+        const trackMatches = [...html.matchAll(/"name":"([^"]+)"/g)];
+        if (trackMatches.length > 5) {
+          const uniqueNames = [...new Set(trackMatches.map(m => m[1]))].slice(0, 100);
+          trackData.push(...uniqueNames.map(name => ({ name })));
+        } else {
+          this.client.emit('debug', `Smart Resolve: Failed to extract tracks from script tag for ${id}`);
+          return null;
+        }
+      }
+
+      this.client.emit('debug', `Smart Resolve: Found ${trackData.length} potential tracks in Spotify ${type}`);
+
+      // Convert Spotify tracks to search promises
+      // Track resolution in chunks to avoid rate limits and too many parallel requests
+      const tracks = [];
+      const batchSize = 10; // Increased batch size for elite performance
+
+      this.client.emit('debug', `Smart Resolve: Beginning resolution of ${trackData.length} tracks...`);
+
+      for (let i = 0; i < trackData.length; i += batchSize) {
+        const chunk = trackData.slice(i, i + batchSize);
+        const resolvedChunk = await Promise.all(chunk.map(async (track) => {
+          const name = track.name;
+          const artist = track.artists?.[0]?.name || '';
+
+          // Optimization: skip search if track already has enough info or try a fast search
+          const res = await this.search(`${name} ${artist}`, {
+            source: 'youtubemusic',
+            limit: 1,
+            node: options.node // Reuse node if provided
+          });
+          return res.tracks?.[0] || null;
+        }));
+
+        tracks.push(...resolvedChunk.filter(t => t !== null));
+
+        // Progress update for large playlists
+        if (trackData.length > 20 && (i + batchSize) % 20 === 0) {
+          this.client.emit('debug', `Smart Resolve: Processed ${i + batchSize}/${trackData.length} tracks...`);
+        }
+
+        // Brief pause to avoid overwhelming Lavalink REST/YouTube Music
+        if (i + batchSize < trackData.length) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+
+      return {
+        loadType: 'playlist',
+        tracks,
+        playlistInfo: {
+          name: playlistName,
+          selectedTrack: 0,
+          url: url
+        },
+        exception: null
+      };
+
+    } catch (error) {
+      this.client.emit('debug', `Smart Resolve Error: ${error.message}`);
+      return null;
     }
-
-    return info;
-  }
-
-  /**
-   * Clear the cache
-   */
-  clearCache() {
-    this.cache.clear();
-  }
-
-  /**
-   * Get cache statistics
-   * @returns {Object} Cache statistics
-   */
-  getCacheStats() {
-    return {
-      size: this.cache.size,
-      ttl: this.cacheTTL,
-      entries: Array.from(this.cache.keys())
-    };
-  }
-
-  /**
-   * Get search statistics
-   * @returns {Object} Search statistics
-   */
-  getStats() {
-    return {
-      cache: this.getCacheStats(),
-      supportedSources: this.getSupportedSources(),
-      availableNodes: this.client.nodes.getConnected().length
-    };
   }
 }
 

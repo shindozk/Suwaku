@@ -200,7 +200,12 @@ class SuwakuTrack {
             isSeekable: this.isSeekable,
             isStream: this.isStream,
             isrc: this.isrc,
-            requester: this.requester,
+            requester: this.requester && typeof this.requester === 'object' ? {
+                id: this.requester.id,
+                username: this.requester.username || this.requester.user?.username,
+                displayName: this.requester.displayName || this.requester.user?.displayName,
+                avatar: this.requester.displayAvatarURL?.() || this.requester.user?.displayAvatarURL?.()
+            } : this.requester,
             addedAt: this.addedAt,
             formattedDuration: this.formattedDuration,
             formattedPosition: this.formattedPosition,

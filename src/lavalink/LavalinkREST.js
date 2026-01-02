@@ -40,15 +40,23 @@ class LavalinkREST {
 
   /**
    * Make a REST request with retry logic
-   * @param {string} method - HTTP method
    * @param {string} endpoint - API endpoint
-   * @param {Object} [data] - Request data
-   * @param {number} [retries=3] - Number of retries
+   * @param {Object} [options] - Request options
+   * @param {string} [options.method='GET'] - HTTP method
+   * @param {Object} [options.data] - Request data
+   * @param {number} [options.retries=3] - Number of retries
    * @returns {Promise<Object>} Response data
-   * @private
    */
-  async _request(method, endpoint, data = null, retries = 3) {
-    const url = `${this.baseURL}${endpoint}`;
+  async doRequest(endpoint, options = {}) {
+    const method = options.method || 'GET';
+    const data = options.data || null;
+    const retries = options.retries ?? 3;
+
+    // Ensure endpoint starts with /v4/ if it doesn't already
+    const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    const fullEndpoint = path.startsWith('/v4') ? path : `/v4${path}`;
+
+    const url = `${this.baseURL}${fullEndpoint}`;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
@@ -127,7 +135,7 @@ class LavalinkREST {
 
     try {
       const encodedIdentifier = encodeURIComponent(identifier);
-      const data = await this._request('GET', `/v4/loadtracks?identifier=${encodedIdentifier}`);
+      const data = await this.doRequest(`/loadtracks?identifier=${encodedIdentifier}`);
 
       return data;
     } catch (error) {
@@ -161,7 +169,7 @@ class LavalinkREST {
         endpoint += '?noReplace=true';
       }
 
-      const result = await this._request('PATCH', endpoint, data);
+      const result = await this.doRequest(endpoint, { method: 'PATCH', data });
       return result;
     } catch (error) {
       throw new ConnectionError(
@@ -181,7 +189,7 @@ class LavalinkREST {
 
     try {
       const sessionId = this.node.sessionId || 'default';
-      await this._request('DELETE', `/v4/sessions/${sessionId}/players/${guildId}`);
+      await this.doRequest(`/sessions/${sessionId}/players/${guildId}`, { method: 'DELETE' });
     } catch (error) {
       // Ignore 404 errors (player already destroyed)
       if (error instanceof PlaybackError) {
@@ -204,7 +212,7 @@ class LavalinkREST {
 
     try {
       const sessionId = this.node.sessionId || 'default';
-      const data = await this._request('GET', `/v4/sessions/${sessionId}/players/${guildId}`);
+      const data = await this.doRequest(`/sessions/${sessionId}/players/${guildId}`);
       return data;
     } catch (error) {
       throw new ConnectionError(
@@ -221,7 +229,7 @@ class LavalinkREST {
   async getPlayers() {
     try {
       const sessionId = this.node.sessionId || 'default';
-      const data = await this._request('GET', `/v4/sessions/${sessionId}/players`);
+      const data = await this.doRequest(`/sessions/${sessionId}/players`);
       return data;
     } catch (error) {
       throw new ConnectionError(
@@ -241,7 +249,7 @@ class LavalinkREST {
 
     try {
       const sessionId = this.node.sessionId || 'default';
-      const result = await this._request('PATCH', `/v4/sessions/${sessionId}`, data);
+      const result = await this.doRequest(`/sessions/${sessionId}`, { method: 'PATCH', data });
       return result;
     } catch (error) {
       throw new ConnectionError(
@@ -257,7 +265,7 @@ class LavalinkREST {
    */
   async getInfo() {
     try {
-      const data = await this._request('GET', '/v4/info');
+      const data = await this.doRequest('/info');
       return data;
     } catch (error) {
       throw new ConnectionError(
@@ -273,7 +281,7 @@ class LavalinkREST {
    */
   async getStats() {
     try {
-      const data = await this._request('GET', '/v4/stats');
+      const data = await this.doRequest('/stats');
       return data;
     } catch (error) {
       throw new ConnectionError(
@@ -289,7 +297,7 @@ class LavalinkREST {
    */
   async getVersion() {
     try {
-      const data = await this._request('GET', '/version');
+      const data = await this.doRequest('/version');
       return data;
     } catch (error) {
       throw new ConnectionError(
@@ -308,7 +316,7 @@ class LavalinkREST {
     validateNonEmptyString(track, 'Track');
 
     try {
-      const data = await this._request('GET', `/v4/decodetrack?encodedTrack=${encodeURIComponent(track)}`);
+      const data = await this.doRequest(`/decodetrack?encodedTrack=${encodeURIComponent(track)}`);
       return data;
     } catch (error) {
       throw new PlaybackError(
@@ -329,13 +337,28 @@ class LavalinkREST {
     }
 
     try {
-      const data = await this._request('POST', '/v4/decodetracks', tracks);
+      const data = await this.doRequest('/decodetracks', { method: 'POST', data: tracks });
       return data;
     } catch (error) {
       throw new PlaybackError(
         `Failed to decode tracks: ${error.message}`,
         { tracks, error }
       );
+    }
+  }
+
+  /**
+   * Get lyrics for a track (Lavalink Lyrics Plugin Feature)
+   * @param {string} track - Encoded track string or query
+   * @returns {Promise<Object>} Lyrics data
+   */
+  async getLyrics(track) {
+    validateNonEmptyString(track, 'Track');
+    try {
+      // Endpoint standard for Lavalink Lyrics Plugin
+      return await this.doRequest(`/sessions/${this.node.sessionId}/players/lyrics?track=${encodeURIComponent(track)}`);
+    } catch (error) {
+      throw new PlaybackError(`Failed to fetch lyrics from node: ${error.message}`, { track, error });
     }
   }
 }

@@ -188,17 +188,27 @@ class SuwakuQueue {
 
     // Move current to previous
     if (this.current) {
-      this.previous.push(this.current);
-      
-      // Limit history size
-      if (this.previous.length > this.maxHistorySize) {
-        this.previous.shift();
-      }
+      this.addToHistory(this.current);
     }
 
     // Get next track
     this.current = this.tracks.shift() || null;
     return this.current;
+  }
+
+  /**
+   * Add a track to the history (previous tracks)
+   * @param {SuwakuTrack} track - The track to add
+   */
+  addToHistory(track) {
+    if (!track) return;
+    
+    this.previous.push(track);
+    
+    // Limit history size
+    if (this.previous.length > this.maxHistorySize) {
+      this.previous.shift();
+    }
   }
 
   /**

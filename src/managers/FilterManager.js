@@ -215,7 +215,7 @@ class FilterManager {
    */
   async applyPreset(preset) {
     const presetLower = preset.toLowerCase().replace(/[-\s]/g, '');
-    
+
     // Map common names to preset keys
     const presetMap = {
       'bassboost': 'BASSBOOST_HIGH',
@@ -240,9 +240,9 @@ class FilterManager {
       'telephone': 'TELEPHONE',
       'radio': 'RADIO'
     };
-    
+
     const presetKey = presetMap[presetLower];
-    
+
     if (!presetKey || !FilterPresets[presetKey]) {
       throw new Error(`Unknown preset: ${preset}. Available: ${Object.keys(presetMap).join(', ')}`);
     }
@@ -517,6 +517,14 @@ class FilterManager {
    */
   hasFilter(filterName) {
     return !!this.filters[filterName];
+  }
+
+  /**
+   * Convert filters to JSON
+   * @returns {Object} JSON representation
+   */
+  toJSON() {
+    return { ...this.filters };
   }
 
   /**

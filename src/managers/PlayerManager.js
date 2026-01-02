@@ -4,7 +4,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { SuwakuPlayer } from '../structures/SuwakuPlayer.js';
+import Structure from '../structures/Structure.js';
 import { validateNonEmptyString, validateObject } from '../utils/validators.js';
 
 /**
@@ -51,7 +51,8 @@ class PlayerManager extends EventEmitter {
     }
 
     // Create new player
-    const player = new SuwakuPlayer(this.client, options);
+    const Player = Structure.get('Player');
+    const player = new Player(this.client, options);
 
     // Store player
     this.players.set(options.guildId, player);

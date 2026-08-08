@@ -1,0 +1,101 @@
+{
+  "name": "suwaku",
+  "version": "1.2.5",
+  "description": "A powerful and flexible Lavalink-based music player for Discord bots. Built with Node.js, featuring multi-source support, advanced queue management, and comprehensive event system.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "type": "module",
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "check-updates": "node scripts/verify-update.js",
+    "check-updates:force": "node scripts/verify-update.js --force",
+    "info": "node scripts/info.js",
+    "welcome": "node scripts/welcome.js",
+    "postinstall": "node scripts/welcome.js && node scripts/verify-update.js --silent || true",
+    "build": "tsc && node scripts/fix-imports.js",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "discord",
+    "discord-bot",
+    "music",
+    "music-bot",
+    "lavalink",
+    "lavalink-client",
+    "audio",
+    "player",
+    "queue",
+    "youtube",
+    "lastfm",
+    "soundcloud",
+    "apple-music",
+    "deezer",
+    "lyrics",
+    "streaming",
+    "discord.js",
+    "suwaku"
+  ],
+  "author": "shindozk",
+  "homepage": "https://suwaku.vercel.app/",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shindozk/Suwaku.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shindozk/Suwaku/issues"
+  },
+  "readme": "https://github.com/shindozk/Suwaku#readme",
+  "dependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "axios": "^1.7.7",
+    "events": "^3.3.0",
+    "fetch-cookie": "^3.2.0",
+    "genius-lyrics": "^4.4.7",
+    "node-fetch": "^3.3.2",
+    "uuid": "^10.0.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@babel/cli": "^7.23.9",
+    "@babel/core": "^7.23.9",
+    "@babel/preset-env": "^7.23.9",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^20.11.16",
+    "eslint": "^8.56.0",
+    "husky": "^9.0.10",
+    "jest": "^29.7.0",
+    "prettier": "^3.2.5",
+    "ts-jest": "^29.4.11",
+    "typescript": "^5.4.2"
+  },
+  "peerDependencies": {
+    "discord.js": "^14.0.0"
+  },
+  "engines": {
+    "node": ">=16.9.0"
+  },
+  "files": [
+    "dist/",
+    "src/",
+    "scripts/",
+    "tests/",
+    "types/",
+    "examples/",
+    "README.md",
+    "LICENSE"
+  ]
+}

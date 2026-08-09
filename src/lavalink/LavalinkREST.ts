@@ -39,7 +39,7 @@ export class LavalinkREST {
     const headers: Record<string, string> = {
       Authorization: this.#node.password,
       'Content-Type': 'application/json',
-      'User-Agent': 'Suwaku/1.2.5'
+      'User-Agent': 'Suwaku/1.3.0'
     };
 
     const options: RequestInit = {

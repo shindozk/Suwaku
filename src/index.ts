@@ -151,4 +151,4 @@ export {
 } from './utils';
 
 // Version
-export const version = '1.2.5';
+export const version = '1.3.0';

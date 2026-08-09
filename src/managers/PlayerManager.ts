@@ -223,6 +223,10 @@ export class PlayerManager extends EventEmitter {
           t.title === track.info?.title && t.author === track.info?.author
         );
       }
+      // Fallback: use currentTrack if track was played directly (not from queue)
+      if (!queuedTrack && player.currentTrack) {
+        queuedTrack = player.currentTrack;
+      }
       if (queuedTrack) {
         player.currentTrack = queuedTrack;
         player.setPlaying(true);
@@ -286,8 +290,15 @@ export class PlayerManager extends EventEmitter {
    */
   handleTrackException(guildId: string, track: import('../types').LavalinkTrackResponse, error: string): void {
     const player = this.#players.get(guildId);
-    if (player && player.currentTrack) {
-      this.emit('trackError', player, player.currentTrack, new Error(error));
+    // Use currentTrack or try to find matching track in queue
+    let affectedTrack = player?.currentTrack;
+    if (!affectedTrack && player) {
+      affectedTrack = player.queue.tracks.find(t => t.encoded === track.encoded)
+        || player.queue.tracks.find(t => t.identifier === track.info?.identifier)
+        || player.queue.tracks.find(t => t.title === track.info?.title && t.author === track.info?.author);
+    }
+    if (affectedTrack) {
+      this.emit('trackError', player!, affectedTrack, new Error(error));
     }
   }
 
@@ -299,8 +310,15 @@ export class PlayerManager extends EventEmitter {
    */
   handleTrackStuck(guildId: string, track: import('../types').LavalinkTrackResponse, threshold: number): void {
     const player = this.#players.get(guildId);
-    if (player && player.currentTrack) {
-      this.emit('trackStuck', player, player.currentTrack, threshold);
+    // Use currentTrack or try to find matching track in queue
+    let affectedTrack = player?.currentTrack;
+    if (!affectedTrack && player) {
+      affectedTrack = player.queue.tracks.find(t => t.encoded === track.encoded)
+        || player.queue.tracks.find(t => t.identifier === track.info?.identifier)
+        || player.queue.tracks.find(t => t.title === track.info?.title && t.author === track.info?.author);
+    }
+    if (affectedTrack) {
+      this.emit('trackStuck', player!, affectedTrack, threshold);
     }
   }
 

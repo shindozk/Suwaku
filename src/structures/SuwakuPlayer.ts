@@ -534,6 +534,7 @@ export class SuwakuPlayer {
   async disconnect(reason: PlayerDestroyReason = PlayerDestroyReason.MANUAL): Promise<void> {
     this.#destroyReason = reason;
     await this.stop();
+    this.#queue.clear(); // Clear queue to prevent stale tracks on reconnect
     if (this.#node) {
       await this.#sendToNode(LavalinkOpcode.DESTROY);
     }

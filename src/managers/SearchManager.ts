@@ -354,15 +354,22 @@ export class SearchManager extends EventEmitter {
    * @param source - Search source
    * @returns Search prefix
    */
-  #getSearchPrefix(source: SearchEngine): string {
-    const prefixes: Record<SearchEngine, string> = {
+  #getSearchPrefix(source: SearchEngine | string): string {
+    const prefixes: Record<string, string> = {
       [SearchEngine.YOUTUBE]: 'ytsearch',
       [SearchEngine.YOUTUBE_MUSIC]: 'ytmsearch',
       [SearchEngine.SOUNDCLOUD]: 'scsearch',
       [SearchEngine.SPOTIFY]: 'spsearch',
       [SearchEngine.LASTFM]: 'lastfm',
       [SearchEngine.DEEZER]: 'dzsearch',
-      [SearchEngine.APPLE_MUSIC]: 'amsearch'
+      [SearchEngine.APPLE_MUSIC]: 'amsearch',
+      // Also accept SearchPrefix values directly
+      'ytsearch': 'ytsearch',
+      'ytmsearch': 'ytmsearch',
+      'scsearch': 'scsearch',
+      'spsearch': 'spsearch',
+      'dzsearch': 'dzsearch',
+      'amsearch': 'amsearch',
     };
     return prefixes[source] ?? 'ytsearch';
   }

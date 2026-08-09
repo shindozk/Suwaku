@@ -57,7 +57,11 @@ export class SearchManager extends EventEmitter {
     const cacheKey = `${query}:${opts.source ?? this.#defaultSource}`;
     const cached = this.#getFromCache(cacheKey);
     if (cached) {
-      return cached;
+      // Clone tracks to avoid sharing requester instances between users
+      return {
+        ...cached,
+        tracks: cached.tracks.map(t => t.clone({ requester: opts.requester }))
+      };
     }
 
     try {
@@ -355,6 +359,7 @@ export class SearchManager extends EventEmitter {
       [SearchEngine.YOUTUBE]: 'ytsearch',
       [SearchEngine.YOUTUBE_MUSIC]: 'ytmsearch',
       [SearchEngine.SOUNDCLOUD]: 'scsearch',
+      [SearchEngine.SPOTIFY]: 'spsearch',
       [SearchEngine.LASTFM]: 'lastfm',
       [SearchEngine.DEEZER]: 'dzsearch',
       [SearchEngine.APPLE_MUSIC]: 'amsearch'

@@ -1,6 +1,6 @@
 {
   "name": "suwaku",
-  "version": "1.3.0",
+  "version": "1.3.5",
   "description": "A powerful and flexible Lavalink-based music player for Discord bots. Built with Node.js, featuring multi-source support, advanced queue management, and comprehensive event system.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -204,8 +204,34 @@ export class SuwakuTrack {
     this.#encoded = value;
   }
 
+  /**
+   * Get plugin-specific info for this track
+   * Note: This returns plugin info, not the full Lavalink track info
+   * @returns Plugin info object
+   */
+  get pluginInfo(): PluginInfo {
+    return { ...this.#pluginInfo };
+  }
+
+  /**
+   * Get full track info including all Lavalink metadata
+   * @returns Full track info object
+   */
   get info(): Record<string, unknown> {
-    return { ...this.#info };
+    return {
+      identifier: this.#identifier,
+      isSeekable: this.#isSeekable,
+      author: this.#author,
+      length: this.#duration,
+      isStream: this.#isStream,
+      position: this.#position,
+      title: this.#title,
+      uri: this.#url,
+      artworkUrl: this.#artworkUrl,
+      isrc: this.#isrc,
+      sourceName: this.#sourceName,
+      pluginInfo: this.#pluginInfo
+    };
   }
 
   get artworkUrl(): string | null {
@@ -230,10 +256,6 @@ export class SuwakuTrack {
 
   get playlistId(): string | null {
     return this.#playlistId;
-  }
-
-  get pluginInfo(): PluginInfo {
-    return { ...this.#pluginInfo };
   }
 
   get identifier(): string | null {

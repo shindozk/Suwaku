@@ -422,7 +422,7 @@ export class FilterManager extends EventEmitter {
    * Remove a specific filter
    * @param filterType - Type of filter to remove
    */
-  removeFilter(filterType: FilterType | string): void {
+  async removeFilter(filterType: FilterType | string): Promise<void> {
     const type = typeof filterType === 'string' ? filterType : filterType;
 
     switch (type) {
@@ -458,7 +458,7 @@ export class FilterManager extends EventEmitter {
         break;
     }
 
-    this.#updateFilters();
+    await this.#updateFilters();
     this.emit('filtersUpdate', this.#filters);
   }
 

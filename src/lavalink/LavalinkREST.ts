@@ -39,7 +39,7 @@ export class LavalinkREST {
     const headers: Record<string, string> = {
       Authorization: this.#node.password,
       'Content-Type': 'application/json',
-      'User-Agent': 'Suwaku/1.3.0'
+      'User-Agent': 'Suwaku/1.3.5'
     };
 
     const options: RequestInit = {
@@ -59,7 +59,20 @@ export class LavalinkREST {
     }
 
     if (response.status === 204) return null as T;
-    return response.json() as Promise<T>;
+    
+    // Check Content-Type before parsing as JSON
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.includes('application/json')) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`Lavalink returned non-JSON response (${contentType}): ${text.substring(0, 200)}`);
+    }
+    
+    try {
+      return await response.json() as T;
+    } catch (parseError) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`Failed to parse Lavalink response as JSON: ${parseError instanceof Error ? parseError.message : parseError}. Body: ${text.substring(0, 200)}`);
+    }
   }
 
   /**

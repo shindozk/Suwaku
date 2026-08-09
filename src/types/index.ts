@@ -44,6 +44,7 @@ export enum SearchPrefix {
   YOUTUBE = 'ytsearch',
   YOUTUBE_MUSIC = 'ytmsearch',
   SOUNDCLOUD = 'scsearch',
+  SPOTIFY = 'spsearch',
   LASTFM = 'lastfm',
   DEEZER = 'dzsearch',
   APPLE_MUSIC = 'amsearch'
@@ -56,6 +57,7 @@ export enum SearchEngine {
   YOUTUBE = 'youtube',
   YOUTUBE_MUSIC = 'youtubemusic',
   SOUNDCLOUD = 'soundcloud',
+  SPOTIFY = 'spotify',
   LASTFM = 'lastfm',
   DEEZER = 'deezer',
   APPLE_MUSIC = 'applemusic'
@@ -435,6 +437,8 @@ export interface NodeConfig {
   secure?: boolean;
   identifier?: string;
   region?: string;
+  /** Connection timeout in milliseconds (default: 10000) */
+  connectTimeout?: number;
 }
 
 /**

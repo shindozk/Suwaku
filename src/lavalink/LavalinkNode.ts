@@ -38,6 +38,7 @@ export class LavalinkNode extends EventEmitter {
   #rest: LavalinkREST;
   #lastPingTimestamp: number = 0;
   #lastPongTimestamp: number = 0;
+  #connectTimeout: number;
 
   constructor(config: NodeConfig, client: SuwakuClient) {
     super();
@@ -56,6 +57,7 @@ export class LavalinkNode extends EventEmitter {
     this.#secure = config.secure ?? false;
     this.#client = client;
     this.#rest = new LavalinkREST(this);
+    this.#connectTimeout = config.connectTimeout ?? 10000;
   }
 
   // Expose private properties for LavalinkREST
@@ -87,13 +89,13 @@ export class LavalinkNode extends EventEmitter {
       this.emit('debug', 'Connecting to node ' + this.#id + ' at ' + this.#host + ':' + this.#port);
       if (this.#reconnectTimeout) { clearTimeout(this.#reconnectTimeout); this.#reconnectTimeout = null; }
       const wsUrl = (this.#secure ? 'wss' : 'ws') + '://' + this.#host + ':' + this.#port + '/v4/websocket';
-      this.#ws = new WebSocket(wsUrl, { headers: { Authorization: this.#password, 'User-Id': this.#client.clientId ?? this.#client.discordClient.user?.id ?? 'suwaku', 'Client-Name': 'Suwaku/1.3.0' } });
+      this.#ws = new WebSocket(wsUrl, { headers: { Authorization: this.#password, 'User-Id': this.#client.clientId ?? this.#client.discordClient.user?.id ?? 'suwaku', 'Client-Name': 'Suwaku/1.3.5' } });
       this.#ws.on('open', () => this.#onOpen());
       this.#ws.on('message', (data) => this.#onMessage(data));
       this.#ws.on('close', (code, reason) => this.#onClose(code, reason));
       this.#ws.on('error', (error) => this.#onError(error));
       await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => { reject(new Error('Connection timeout for node ' + this.#id)); }, 10000);
+        const timeout = setTimeout(() => { reject(new Error('Connection timeout for node ' + this.#id)); }, this.#connectTimeout);
         this.once('nodeReady', () => { clearTimeout(timeout); resolve(); });
         this.once('nodeError', (error) => { clearTimeout(timeout); reject(error); });
       });

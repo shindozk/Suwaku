@@ -35,7 +35,7 @@ export class PlayerManager extends EventEmitter {
   }
 
   get players(): Map<string, SuwakuPlayer> {
-    return new Map(this.#players);
+    return this.#players;
   }
 
   get size(): number {
@@ -211,8 +211,18 @@ export class PlayerManager extends EventEmitter {
   handleTrackStart(guildId: string, track: import('../types').LavalinkTrackResponse): void {
     const player = this.#players.get(guildId);
     if (player) {
-      // Find the matching track in queue
-      const queuedTrack = player.queue.tracks.find(t => t.encoded === track.encoded);
+      // Find the matching track in queue - try encoded first, then fallback to identifier/title
+      let queuedTrack = player.queue.tracks.find(t => t.encoded === track.encoded);
+      if (!queuedTrack) {
+        // Fallback: match by identifier
+        queuedTrack = player.queue.tracks.find(t => t.identifier === track.info?.identifier);
+      }
+      if (!queuedTrack) {
+        // Fallback: match by title and author
+        queuedTrack = player.queue.tracks.find(t =>
+          t.title === track.info?.title && t.author === track.info?.author
+        );
+      }
       if (queuedTrack) {
         player.currentTrack = queuedTrack;
         player.setPlaying(true);

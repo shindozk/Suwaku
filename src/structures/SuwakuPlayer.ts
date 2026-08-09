@@ -61,6 +61,7 @@ export class SuwakuPlayer {
   #destroyReason: PlayerDestroyReason | null = null;
   #idleTimeout: ReturnType<typeof setTimeout> | null = null;
   #discordVoiceConnected: boolean = false;
+  #listeners: Map<string, Set<(...args: any[]) => void>> = new Map();
 
   constructor(
     guildId: string,
@@ -225,7 +226,6 @@ export class SuwakuPlayer {
   setPosition(position: number): void {
     validateNumber(position, 'Position');
     this.#position = Math.max(0, position);
-    this.#sendToNode(LavalinkOpcode.SEEK, { position: this.#position });
   }
 
   setLoopMode(mode: LoopMode): void {
@@ -320,7 +320,6 @@ export class SuwakuPlayer {
     }
 
     await this.#sendToNode(LavalinkOpcode.PLAY, payload);
-    this.emit(PlayerEvent.TRACK_START, track);
   }
 
   async pause(): Promise<void> {
@@ -528,7 +527,8 @@ export class SuwakuPlayer {
     }
     this.#state = PlayerState.IDLE;
     this.emit(PlayerEvent.CONNECTING);
-    // Connection handled by VoiceStateManager
+    // Connection to Lavalink is handled by VoiceStateManager
+    // This method ensures the player is in a ready state
   }
 
   async disconnect(reason: PlayerDestroyReason = PlayerDestroyReason.MANUAL): Promise<void> {
@@ -564,16 +564,32 @@ export class SuwakuPlayer {
     this.#playerManager.emit(event, this, data);
   }
 
-  on(event: PlayerEvent | string, listener: (data?: unknown) => void): void {
+  on(event: PlayerEvent | string, listener: (...args: any[]) => void): void {
+    if (!this.#listeners.has(event)) {
+      this.#listeners.set(event, new Set());
+    }
+    this.#listeners.get(event)!.add(listener);
     this.#playerManager.on(event, listener);
   }
 
-  off(event: PlayerEvent | string, listener: (data?: unknown) => void): void {
+  off(event: PlayerEvent | string, listener: (...args: any[]) => void): void {
+    const eventListeners = this.#listeners.get(event);
+    if (eventListeners) {
+      eventListeners.delete(listener);
+      if (eventListeners.size === 0) {
+        this.#listeners.delete(event);
+      }
+    }
     this.#playerManager.off(event, listener);
   }
 
   removeAllListeners(): void {
-    this.#playerManager.removeAllListeners();
+    for (const [event, listeners] of this.#listeners) {
+      for (const listener of listeners) {
+        this.#playerManager.off(event, listener);
+      }
+    }
+    this.#listeners.clear();
   }
 
   /**

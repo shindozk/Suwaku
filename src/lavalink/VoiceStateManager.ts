@@ -34,12 +34,30 @@ export class VoiceStateManager extends EventEmitter {
 
   /**
    * Handle incoming voice state update packet
+   * Maps Discord raw gateway packets (snake_case) to internal types (camelCase)
    */
   handlePacket(packet: { t: string; d: any }): void {
     if (packet.t === 'VOICE_STATE_UPDATE') {
-      this.#handleVoiceStateUpdate(packet.d);
+      const d = packet.d;
+      this.#handleVoiceStateUpdate({
+        guildId: d.guild_id ?? d.guildId,
+        channelId: d.channel_id ?? d.channelId ?? null,
+        userId: d.user_id ?? d.userId,
+        sessionId: d.session_id ?? d.sessionId,
+        deaf: d.deaf ?? false,
+        mute: d.mute ?? false,
+        selfDeaf: d.self_deaf ?? d.selfDeaf ?? false,
+        selfMute: d.self_mute ?? d.selfMute ?? false,
+        selfVideo: d.self_video ?? d.selfVideo ?? false,
+        suppress: d.suppress ?? false,
+      });
     } else if (packet.t === 'VOICE_SERVER_UPDATE') {
-      this.#handleVoiceServerUpdate(packet.d);
+      const d = packet.d;
+      this.#handleVoiceServerUpdate({
+        guildId: d.guild_id ?? d.guildId,
+        endpoint: d.endpoint,
+        token: d.token,
+      });
     }
   }
 
@@ -50,8 +68,10 @@ export class VoiceStateManager extends EventEmitter {
     const guildId = data.guildId;
     if (!guildId) return;
 
-    // Ignore if not our bot
-    if (data.userId !== this.#client.clientId) return;
+    // If clientId is not set yet, we still process the update
+    // This can happen if voice state arrives before init() completes
+    // We only filter by userId if clientId is available
+    if (this.#client.clientId && data.userId !== this.#client.clientId) return;
 
     let pending = this.#pendingUpdates.get(guildId);
 
@@ -180,8 +200,7 @@ export class VoiceStateManager extends EventEmitter {
 
   /**
    * Wait for the voiceUpdate to be sent to Lavalink for a guild.
-   * Blocks until the voiceUpdate is sent, or resolves immediately
-   * if it was already sent.
+   * Blocks until the voiceUpdate is sent, or rejects if timeout expires.
    */
   async waitForConnection(guildId: string, timeoutMs?: number): Promise<void> {
     // Already completed — return immediately
@@ -198,10 +217,10 @@ export class VoiceStateManager extends EventEmitter {
 
     // No pending and not completed — raw events haven't arrived yet.
     // Wait for them with a timeout.
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#waiters.delete(guildId);
-        resolve(); // Continue anyway, don't block forever
+        reject(new Error(`Voice connection timeout for guild ${guildId} after ${timeoutMs ?? this.#timeout}ms`));
       }, timeoutMs ?? this.#timeout);
 
       this.#waiters.set(guildId, { resolve, timer });

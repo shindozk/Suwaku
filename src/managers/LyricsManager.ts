@@ -164,7 +164,7 @@ export class LyricsManager extends EventEmitter {
         `https://lrclib.net/api/search?${searchParams.toString()}`,
         {
           headers: {
-            'User-Agent': 'Suwaku/1.3.5 (https://github.com/shindozk/Suwaku)'
+            'User-Agent': 'Suwaku/1.3.8 (https://github.com/shindozk/Suwaku)'
           }
         }
       );

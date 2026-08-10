@@ -145,14 +145,15 @@ export async function play(
         player.setDiscordVoiceConnected(false);
       });
 
-      await player.connect();
+await player.connect();
 
-      try {
-        await client.voiceStates.waitForConnection(vc.guild.id);
-      } catch {
-        // If voice update fails, we still continue — Lavalink may retry
-      }
+    try {
+      await client.voiceStates.waitForConnection(vc.guild.id);
     } catch (error) {
+      // Voice connection failed - throw error instead of continuing
+      throw new Error(`Voice connection failed: ${(error as Error).message}`);
+    }
+  } catch (error) {
       throw new Error(`Failed to join voice channel: ${(error as Error).message}`);
     }
   }

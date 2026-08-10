@@ -39,7 +39,7 @@ export class LavalinkREST {
     const headers: Record<string, string> = {
       Authorization: this.#node.password,
       'Content-Type': 'application/json',
-      'User-Agent': 'Suwaku/1.3.8'
+      'User-Agent': 'Suwaku/1.3.9'
     };
 
     const options: RequestInit = {
@@ -101,8 +101,10 @@ export class LavalinkREST {
    * Get player info
    */
   async getPlayer(guildId: string): Promise<NodePlayer | null> {
+    const sessionId = this.#node.sessionId;
+    if (!sessionId) throw new Error('Node not ready: no sessionId');
     try {
-      return await this.#request<NodePlayer>('GET', `/v4/sessions/${this.#client.options.sessionId}/players/${guildId}`);
+      return await this.#request<NodePlayer>('GET', `/v4/sessions/${sessionId}/players/${guildId}`);
     } catch {
       return null;
     }
@@ -112,13 +114,17 @@ export class LavalinkREST {
    * Update player state
    */
   async updatePlayer(guildId: string, data: Record<string, unknown>): Promise<void> {
-    await this.#request('PATCH', `/v4/sessions/${this.#client.options.sessionId}/players/${guildId}`, data);
+    const sessionId = this.#node.sessionId;
+    if (!sessionId) throw new Error('Node not ready: no sessionId');
+    await this.#request('PATCH', `/v4/sessions/${sessionId}/players/${guildId}`, data);
   }
 
   /**
    * Destroy player
    */
   async destroyPlayer(guildId: string): Promise<void> {
-    await this.#request('DELETE', `/v4/sessions/${this.#client.options.sessionId}/players/${guildId}`);
+    const sessionId = this.#node.sessionId;
+    if (!sessionId) throw new Error('Node not ready: no sessionId');
+    await this.#request('DELETE', `/v4/sessions/${sessionId}/players/${guildId}`);
   }
 }

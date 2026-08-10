@@ -307,8 +307,8 @@ export class SuwakuPlayer {
     this.#position = options?.startTime ?? 0;
 
     const payload: Record<string, unknown> = {
-      encoded: track.encoded,
-      position: this.#position
+      track: { encoded: track.encoded },
+      startTime: this.#position
     };
 
     if (options?.endTime) {

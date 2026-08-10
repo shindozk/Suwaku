@@ -25,7 +25,7 @@ import { setupEventForwarding, setupDiscordListeners } from './EventForwarder';
 import type { NodeConfig, SearchEngine, SearchResult, URLFilterOptions, PlayerOptions, SearchOptions, AutocompleteChoice, MoodSearchOptions, ClientStats } from '../types';
 
 // Version will be injected at build time
-const version = '1.3.8';
+const version = '1.3.9';
 
 export class SuwakuClient extends EventEmitter {
   #ready = false;

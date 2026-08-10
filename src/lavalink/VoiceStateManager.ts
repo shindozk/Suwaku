@@ -228,6 +228,21 @@ export class VoiceStateManager extends EventEmitter {
   }
 
   /**
+   * Mark a guild as completed (voiceUpdate already sent via another path)
+   */
+  markCompleted(guildId: string): void {
+    this.#completedGuilds.add(guildId);
+    setTimeout(() => this.#completedGuilds.delete(guildId), 30_000);
+
+    const waiter = this.#waiters.get(guildId);
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+      this.#waiters.delete(guildId);
+    }
+  }
+
+  /**
    * Clear pending update for a guild
    */
   clear(guildId: string): void {

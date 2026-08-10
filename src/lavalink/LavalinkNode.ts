@@ -89,7 +89,7 @@ export class LavalinkNode extends EventEmitter {
       this.emit('debug', 'Connecting to node ' + this.#id + ' at ' + this.#host + ':' + this.#port);
       if (this.#reconnectTimeout) { clearTimeout(this.#reconnectTimeout); this.#reconnectTimeout = null; }
       const wsUrl = (this.#secure ? 'wss' : 'ws') + '://' + this.#host + ':' + this.#port + '/v4/websocket';
-      this.#ws = new WebSocket(wsUrl, { headers: { Authorization: this.#password, 'User-Id': this.#client.clientId ?? this.#client.discordClient.user?.id ?? 'suwaku', 'Client-Name': 'Suwaku/1.3.9' } });
+      this.#ws = new WebSocket(wsUrl, { headers: { Authorization: this.#password, 'User-Id': this.#client.clientId ?? this.#client.discordClient.user?.id ?? 'suwaku', 'Client-Name': 'Suwaku/1.3.10' } });
       this.#ws.on('open', () => this.#onOpen());
       this.#ws.on('message', (data) => this.#onMessage(data));
       this.#ws.on('close', (code, reason) => this.#onClose(code, reason));

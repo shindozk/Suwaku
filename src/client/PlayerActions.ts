@@ -113,10 +113,65 @@ export async function play(
 
   if (!player.connected) {
     try {
+      // Capture voice state/server updates from the voice adapter directly
+      let pendingVoiceState: any = null;
+      let pendingVoiceServer: any = null;
+      let voiceUpdateSent = false;
+
+      const sendVoiceUpdateToNode = async () => {
+        if (voiceUpdateSent || !pendingVoiceState || !pendingVoiceServer) return;
+        voiceUpdateSent = true;
+        const node = player.node || client.nodes.getBest();
+        if (!node || !node.connected) {
+          client.emit('warn', 'No connected node available for voiceUpdate');
+          return;
+        }
+        try {
+          await node.voiceStateUpdate(vc.guild.id, {
+            sessionId: pendingVoiceState.session_id ?? pendingVoiceState.sessionId,
+            event: {
+              token: pendingVoiceServer.token,
+              endpoint: pendingVoiceServer.endpoint,
+              guild_id: vc.guild.id,
+            }
+          });
+          client.emit('debug', `Voice update sent to Lavalink for guild ${vc.guild.id}`);
+          client.voiceStates.markCompleted(vc.guild.id);
+        } catch (error) {
+          client.emit('error', new Error(`Failed to send voiceUpdate: ${(error as Error).message}`));
+        }
+      };
+
+      // Intercept the voice adapter to capture voice state/server updates
+      const originalAdapter = vc.guild.voiceAdapterCreator as any;
+      const patchedAdapter = (methods: any) => {
+        const adapter = originalAdapter(methods);
+        const originalOnVoiceStateUpdate = adapter.onVoiceStateUpdate;
+        const originalOnVoiceServerUpdate = adapter.onVoiceServerUpdate;
+
+        if (originalOnVoiceStateUpdate) {
+          adapter.onVoiceStateUpdate = (data: any) => {
+            pendingVoiceState = data;
+            sendVoiceUpdateToNode();
+            return originalOnVoiceStateUpdate.call(adapter, data);
+          };
+        }
+
+        if (originalOnVoiceServerUpdate) {
+          adapter.onVoiceServerUpdate = (data: any) => {
+            pendingVoiceServer = data;
+            sendVoiceUpdateToNode();
+            return originalOnVoiceServerUpdate.call(adapter, data);
+          };
+        }
+
+        return adapter;
+      };
+
       const connection = joinVoiceChannel({
         channelId: vc.id,
         guildId: vc.guild.id,
-        adapterCreator: vc.guild.voiceAdapterCreator as any,
+        adapterCreator: patchedAdapter,
         selfDeaf: false,
         selfMute: false,
       });
@@ -145,14 +200,18 @@ export async function play(
         player.setDiscordVoiceConnected(false);
       });
 
-await player.connect();
+      await player.connect();
 
-    try {
-      await client.voiceStates.waitForConnection(vc.guild.id);
-    } catch (error) {
-      // Voice connection failed - throw error instead of continuing
-      throw new Error(`Voice connection failed: ${(error as Error).message}`);
-    }
+      // Also try the VoiceStateManager path as fallback (raw events)
+      // If adapter path already sent the update, this resolves immediately
+      try {
+        await client.voiceStates.waitForConnection(vc.guild.id);
+      } catch {
+        // If raw event path timed out but adapter already sent it, that's fine
+        if (!voiceUpdateSent) {
+          throw new Error('Voice connection failed: neither adapter nor raw events delivered voiceUpdate');
+        }
+      }
   } catch (error) {
       throw new Error(`Failed to join voice channel: ${(error as Error).message}`);
     }
